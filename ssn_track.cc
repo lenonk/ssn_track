@@ -155,8 +155,6 @@ static bool key_eq(ssnt_key_t *k1, ssnt_key_t *k2) {
     return !memcmp(k1, k2, sizeof(ssnt_key_t));
 }
 
-// Hash func: XOR32
-// https://www.researchgate.net/publication/281571413_COMPARISON_OF_HASH_STRATEGIES_FOR_FLOW-BASED_LOAD_BALANCING
 uint64_t hash_func(uint64_t mask, ssnt_key_t *key) {
     uint64_t h = key->sip ^ key->dip;
     h ^= key->sport ^ key->dport;
