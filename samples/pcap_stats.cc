@@ -1,6 +1,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <version.h>
 #include <pcap.h>
 #include <arpa/inet.h>
 
@@ -51,6 +52,7 @@ struct tcph_t {
 };
 
 void usage() {
+    printf("ssn_track sample\nUsing lib version %d.%d\n", ssn_track_VERSION_MAJOR, ssn_track_VERSION_MINOR);
     puts("Usage: ./pcap_stats <pcap>");
 }
 

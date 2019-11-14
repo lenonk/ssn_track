@@ -1,12 +1,14 @@
 #include <stdarg.h>
 #include <string.h>
 #include <stdio.h>
+#include <assert.h>
+#include <openssl/md5.h>
 #include "ssn_track.h"
 
-int ssnt_log_level = SSNT_DEBUG;
+ssnt_config_t ssnt_config = { SSNT_DEFAULT_NUM_ROWS, SSNT_DEFAULT_TIMEOUT, SSNT_INFO };
 
 void debug(const char *args, ...) {
-    if(ssnt_log_level > SSNT_DEBUG)
+    if(ssnt_config.log_level > SSNT_DEBUG)
         return;
 
     va_list ap;
@@ -15,6 +17,46 @@ void debug(const char *args, ...) {
     vprintf(args, ap);
     puts("");
     va_end(ap);
+}
+
+void ssnt_debug_struct(ssnt_t *table) {
+    // if(ssnt_config.log_level > SSNT_DEBUG)
+    //    return;
+
+    debug("Table %p stats:", table);
+    debug("    rows: %d", table->num_rows);
+    debug("    currently inserted: %llu", table->stats.inserted);
+    debug("    collisions: %llu", table->stats.collisions);
+    debug("    timeouts: %llu", table->stats.timeouts);
+
+    debug("  Nodes:");
+    uint32_t counted_nodes = 0;
+    ssnt_lru_node_t *node = table->timeouts->head;
+    time_t now = time(NULL);
+
+    for(; node; node = node->next) {
+        debug("    Timeout node: %p, idx %d, last: %u", node, node->idx, node->last);
+        if((now - node->last) > ssnt_config.timeout) {
+            debug("     WARNING: Node should be timed out");
+        }
+        ssnt_row_t *row = table->rows[node->idx];
+        assert(row->data);
+        debug("        key: %u:%u %u:%u %u", 
+            row->key.sip, row->key.dip, row->key.sport, row->key.dport, row->key.vlan);
+        counted_nodes++;
+        if(!node->next && node != table->timeouts->tail) {
+            debug("WARNING: tail appears to be dangling");
+            abort();
+        }    
+    }
+
+    if(counted_nodes != table->stats.inserted) {
+        debug("WARNING: Counted nodes != expected nodes: %d != %d", 
+            counted_nodes, table->stats.inserted);
+        abort();
+    }
+    else
+        debug("Counted nodes: %d", counted_nodes);
 }
 
 ssnt_row_t *ssnt_new_row() {
@@ -26,10 +68,13 @@ ssnt_row_t *ssnt_new_row() {
 };
 
 ssnt_t *ssnt_new(void (*free_cb)(void *)) {
+    return ssnt_new(ssnt_config.num_rows, ssnt_config.timeout, free_cb);
+}
+
+ssnt_t *ssnt_new(uint32_t rows, uint32_t timeout_seconds, void (*free_cb)(void *)) {
     ssnt_t *table = new ssnt_t;
-    table->num_rows = SSNT_DEFAULT_NUM_ROWS;
-    table->timeout = SSNT_DEFAULT_TIMEOUT;
-    table->inserted = 0;
+    table->num_rows = rows;
+    table->timeout = timeout_seconds;
     table->rows = new ssnt_row_t*[table->num_rows];
     for(int i=0; i<table->num_rows; i++)
         table->rows[i] = ssnt_new_row();
@@ -37,6 +82,7 @@ ssnt_t *ssnt_new(void (*free_cb)(void *)) {
     table->timeouts->head = NULL;
     table->timeouts->tail = NULL;
     table->free_cb = free_cb;
+    memset(&table->stats, 0, sizeof(table->stats));
     return table;
 }
 
@@ -44,7 +90,7 @@ void ssnt_free(ssnt_t *table) {
     if(!table) return;
 
     for(ssnt_lru_node_t *node = table->timeouts->head; node; ) {
-        printf("deleting to node %p\n", node);
+        debug("%s: Deleting TO node %p idx %d", __func__, node, node->idx);
         table->free_cb(table->rows[node->idx]->data);
         ssnt_lru_node_t *tmp = node; 
         node = node->next;
@@ -60,6 +106,58 @@ void ssnt_free(ssnt_t *table) {
     delete table;
 }
 
+void ssnt_timeout_update(ssnt_t *table, int max_age) {
+    // Iterate backwards from tail, removing old nodes
+    time_t now = time(NULL);
+
+    // puts("Timeout thingy starting");
+    // ssnt_debug_struct(table);
+
+    ssnt_lru_t *timeouts = table->timeouts;
+    ssnt_lru_node_t *oldest = timeouts->tail;
+
+    while(oldest) {
+        if((now - oldest->last) < max_age) {
+            break;
+        }
+
+        debug("Timing out node for idx %d: %d >= %d", 
+            oldest->idx, now - oldest->last, max_age);
+
+        table->stats.timeouts++;
+        if(oldest->prev) {
+            oldest->prev->next = NULL;
+            if(!oldest->next)
+                timeouts->tail = oldest->prev;
+        }
+        // We're removing the head node
+        else
+            timeouts->head = timeouts->tail = NULL;
+
+        ssnt_row_t *row = table->rows[oldest->idx];
+
+        assert(row->data);
+
+        if(row->data) {
+            table->free_cb(row->data);
+            table->stats.inserted--;
+            row->data = NULL;
+            row->to_node = NULL;
+        }
+
+        ssnt_lru_node_t *tmp = oldest;
+        oldest = oldest->prev;
+        delete tmp;
+
+        // ssnt_debug_struct(table);
+    }
+
+    timeouts->tail = oldest;
+
+    // puts("Timeout thingy done!!!");
+    // ssnt_debug_struct(table);
+}
+
 void ssnt_timeout_update(ssnt_t *table, ssnt_row_t *row, uint64_t idx) {
     ssnt_lru_t *timeouts = table->timeouts;
     ssnt_lru_node_t *node;
@@ -67,7 +165,7 @@ void ssnt_timeout_update(ssnt_t *table, ssnt_row_t *row, uint64_t idx) {
     // Null if new node
     if(!row->to_node) {
         node = new ssnt_lru_node_t;
-        printf("Created to node %p for index %d\n", node, idx);
+        debug("Created TO node %p for index %d", node, idx);
         node->next = node->prev = NULL;
         row->to_node = node;
         node->idx = idx;
@@ -78,11 +176,13 @@ void ssnt_timeout_update(ssnt_t *table, ssnt_row_t *row, uint64_t idx) {
     if(node != timeouts->head) {
         if(node->prev) {
             node->prev->next = node->next;
+
+            if(timeouts->tail == node)
+                timeouts->tail = node->prev;
         }
 
-        if(node->next) {
+        if(node->next)
             node->next->prev = node->prev;
-        }
 
         node->next = timeouts->head;
         node->prev = NULL;
@@ -95,42 +195,11 @@ void ssnt_timeout_update(ssnt_t *table, ssnt_row_t *row, uint64_t idx) {
 
     if(!node->next)
         timeouts->tail = node;
-    else {
-        // Iterate backwards from tail, removing old nodes
-        time_t now = time(NULL);
-
-        ssnt_lru_node_t *oldest = timeouts->tail;
-        while(oldest && oldest != node) {
-            if(now - oldest->last < SSNT_DEFAULT_TIMEOUT) {
-                break;
-            }
-
-            printf("Timing out node for idx %d\n", oldest->idx);
-            if(oldest->prev) {
-                oldest->prev->next = NULL;
-            }
-            // We're removing the head node
-            else {
-                timeouts->head = timeouts->tail = NULL;
-            }
-
-            row = table->rows[oldest->idx];
-            if(row->data) {
-                table->free_cb(row->data);
-                table->inserted--;
-                row->data = NULL;
-            }
-
-            ssnt_lru_node_t *tmp = oldest;
-            oldest = oldest->prev;
-            delete tmp;
-        }
-
-        timeouts->tail = oldest;
-    }
+    else
+        ssnt_timeout_update(table, table->timeout);
 }
 
-void ssnt_timeout_remove(ssnt_lru_t *timeouts, ssnt_lru_node_t *node) {
+void _ssnt_timeout_remove(ssnt_lru_t *timeouts, ssnt_lru_node_t *node) {
     if(timeouts->head == node) {
         timeouts->head = node->next;
         if(timeouts->head)
@@ -147,7 +216,7 @@ void ssnt_timeout_remove(ssnt_lru_t *timeouts, ssnt_lru_node_t *node) {
             timeouts->tail = node->prev;
     }
 
-    printf("Deleting TO node %p idx %d\n", node, node->idx);
+    debug("%s: Deleting TO node %p idx %d", __func__, node, node->idx);
     delete node;
 }
 
@@ -155,10 +224,25 @@ static bool key_eq(ssnt_key_t *k1, ssnt_key_t *k2) {
     return !memcmp(k1, k2, sizeof(ssnt_key_t));
 }
 
-uint64_t hash_func(uint64_t mask, ssnt_key_t *key) {
-    uint64_t h = key->sip ^ key->dip;
-    h ^= key->sport ^ key->dport;
-    return (h ^ key->vlan) % mask;
+// Hash func: XOR32
+// Reference: https://www.researchgate.net/publication/281571413_COMPARISON_OF_HASH_STRATEGIES_FOR_FLOW-BASED_LOAD_BALANCING
+static inline uint64_t hash_func(uint64_t mask, ssnt_key_t *key) {
+#if 1
+    uint64_t h = ((uint64_t)(key->sip + key->dip) ^
+                            (key->sport + key->dport));
+    h *= 1 + key->vlan;
+#else
+    // XXX Gave similar distribution performance to the above
+    MD5_CTX c;
+    MD5_Init(&c);
+    MD5_Update(&c, key, sizeof(*key));
+    unsigned char digest[16];
+    MD5_Final(digest, &c);
+    
+    uint64_t h = *(uint64_t*)digest;
+    debug("HASH: %llu -> %ld", h, h % mask); 
+#endif
+    return h % mask;
 }
 
 static int64_t _lookup(ssnt_t *table, ssnt_key_t *key) {
@@ -174,6 +258,10 @@ static int64_t _lookup(ssnt_t *table, ssnt_key_t *key) {
 
     uint64_t start = idx++;
     while(idx != start) {
+        debug("Index %d collides", idx);
+
+        table->stats.collisions++;
+
         if(idx >= table->num_rows)
             idx = 0;
 
@@ -181,6 +269,8 @@ static int64_t _lookup(ssnt_t *table, ssnt_key_t *key) {
 
         if(!row->data || key_eq(key, &row->key))
             return idx;
+
+        idx++;
     }
 
     return -1;
@@ -192,23 +282,26 @@ ssnt_stat_t ssnt_insert(ssnt_t *table, ssnt_key_t *key, void *data) {
     if(!data)
         return SSNT_EXCEPTION;
 
-    if(table->inserted * 4 > table->num_rows)
+    if(table->stats.inserted * 8 > table->num_rows)
         return SSNT_FULL;
 
-    table->inserted++;
     int64_t idx = _lookup(table, key);
     if(idx < 0)
         return SSNT_EXCEPTION;
 
     ssnt_row_t *row = table->rows[idx];
 
-    if(row->data)
+    if(row->data) {
         table->free_cb(row);
+    }
+
+    memcpy(&row->key, key, sizeof(row->key));
+    table->stats.inserted++;
+    row->data = data;
 
     ssnt_timeout_update(table, row, idx);
 
-    memcpy(&row->key, key, sizeof(row->key));
-    row->data = data;
+    // ssnt_debug_struct(table);
     return SSNT_OK;
 }
 
@@ -223,6 +316,7 @@ void *ssnt_lookup(ssnt_t *table, ssnt_key_t *key) {
     if(!row->data)
         return NULL;
 
+    debug("Looked up %d", idx);
     ssnt_timeout_update(table, row, idx);
 
     return row->data;
@@ -239,10 +333,10 @@ void ssnt_delete(ssnt_t *table, ssnt_key_t *key) {
         return;
 
     if(row->to_node)
-        ssnt_timeout_remove(table->timeouts, row->to_node);
+        _ssnt_timeout_remove(table->timeouts, row->to_node);
 
     table->free_cb(row->data);
-    table->inserted--;
+    table->stats.inserted--;
     row->data = NULL;
     row->to_node = NULL;
 }

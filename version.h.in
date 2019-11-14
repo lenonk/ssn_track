@@ -1,0 +1,2 @@
+#define ssn_track_VERSION_MAJOR @ssn_track_VERSION_MAJOR@
+#define ssn_track_VERSION_MINOR @ssn_track_VERSION_MINOR@

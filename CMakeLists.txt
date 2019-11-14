@@ -1,9 +1,13 @@
-cmake_minimum_required(VERSION 2.8)
+cmake_minimum_required(VERSION 3.0)
+
+project(ssn_track VERSION 0.1)
 
 configure_file(version.h.in version.h)
 
 #target_include_directories(ssn_track PUBLIC "${PROJECT_BINARY_DIR}")
 add_library(ssn_track ssn_track.cc)
 add_subdirectory(samples)
+add_subdirectory(tests)
+target_link_libraries(ssn_track crypto)
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g")
