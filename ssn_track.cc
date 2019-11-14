@@ -1,3 +1,9 @@
+/*
+ * @author  Adam Keeton <ajkeeton@gmail.com>
+ * Copyright (C) 2009-2019 Adam Keeton
+ * TCP session tracker, with timeouts. Uses simple hash
+*/
+
 #include <stdarg.h>
 #include <string.h>
 #include <stdio.h>
@@ -78,6 +84,7 @@ ssnt_t *ssnt_new(uint32_t rows, uint32_t timeout_seconds, void (*free_cb)(void *
     table->rows = new ssnt_row_t*[table->num_rows];
     for(int i=0; i<table->num_rows; i++)
         table->rows[i] = ssnt_new_row();
+
     table->timeouts = new ssnt_lru_t;
     table->timeouts->head = NULL;
     table->timeouts->tail = NULL;

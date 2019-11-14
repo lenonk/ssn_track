@@ -2,7 +2,7 @@
 
 /*
  * @author  Adam Keeton <ajkeeton@gmail.com>
- *
+ * Copyright (C) 2009-2019 Adam Keeton
  * TCP session tracker, with timeouts. Uses simple hash
 */
 
@@ -11,9 +11,7 @@
 #include <sys/types.h>
 #include <time.h>
 
-// #define SSNT_DEFAULT_NUM_ROWS 1024*1024
 #define SSNT_DEFAULT_NUM_ROWS 1000003 // <-- large prime
-//
 #define SSNT_DEFAULT_TIMEOUT 60 // seconds
 
 enum ssnt_stat_t {

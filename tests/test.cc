@@ -4,6 +4,9 @@
 #include <strings.h>
 #include <assert.h>
 #include <stdio.h>
+#include <sys/time.h>
+#include <map>
+#include <list>
 #include "ssn_track.h"
 
 void ssnt_debug_struct(ssnt_t *table);
@@ -63,7 +66,7 @@ void basic() {
     ssnt_free(tracker);
 }
 
-#define NUM_ITS 4096 
+#define NUM_ITS 2 // 4096*2
 void fuzz() {
     // Random adds, deletes, and timeouts
     printf("%s\n", __func__);
@@ -169,9 +172,102 @@ void timeouts() {
     ssnt_free(tracker);
 }
 
+struct key_cmp {
+    bool operator()(const ssnt_key_t &k1, const ssnt_key_t &k2) const {
+        return memcmp((void*)&k1, (void*)&k2, sizeof(ssnt_key_t)) == -1;
+    }
+};
+
+void bench_stl() {
+// Not yet working
+#if 0
+    std::map<ssnt_key_t, char *, key_cmp> tree;
+    std::list<ssnt_key_t> to;
+
+    ssnt_key_t key;
+    bzero(&key, sizeof(key)); 
+    key.dport = (uint16_t)rand();
+    key.dip = rand();
+
+    ssnt_key_t keys[NUM_ITS];
+    memset(&keys, 0, sizeof(keys));
+
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    uint64_t now = 1000000 * tv.tv_sec + tv.tv_usec;
+
+    for(int i=0; i<NUM_ITS; i++) {
+        key.sip = rand();
+        key.sport = (uint16_t)rand();
+        keys[i] = key;
+        tree[key] = strdup("foo");
+        to.push_front(key);
+    }
+
+    for(int i=0; i<NUM_ITS; i++) {
+        auto it = tree.find(keys[i]);
+        assert(it != tree.end());
+        assert(!strcmp("foo", it->second));
+        // TODO: to simulate, pop from list then push onto list
+        // to.push_front(key);
+    }
+
+    for(int i=0; i<NUM_ITS; i++) {
+        auto it = tree.find(keys[i]);
+        assert(it != tree.end());
+        free(it->second);
+        //tree.erase(keys[i]);
+        to.pop_front();
+    }
+
+    gettimeofday(&tv, NULL);
+    uint64_t fin = 1000000 * tv.tv_sec + tv.tv_usec;
+    printf("STL map (without overhead from timeouts): " 
+            "%d inserts, lookups, and deletes: %f ms\n", 
+            NUM_ITS, float((fin - now))/1000);
+#endif
+}
+
 void bench() {
     printf("%s\n", __func__);
-    puts("TODO");
+
+    // Make repeatable
+    srand(1);
+    ssnt_t *tracker = ssnt_new(SSNT_DEFAULT_NUM_ROWS, 1, free_cb);
+
+    ssnt_key_t key;
+    // Bzero'ing to clean up pad bytes and prevent valgrind from complaining
+    bzero(&key, sizeof(key)); 
+    key.dport = (uint16_t)rand();
+    key.dip = rand();
+
+    ssnt_key_t keys[NUM_ITS];
+    memset(&keys, 0, sizeof(keys));
+
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    uint64_t now = 1000000 * tv.tv_sec + tv.tv_usec;
+
+    for(int i=0; i<NUM_ITS; i++) {
+        key.sip = rand();
+        key.sport = (uint16_t)rand();
+        keys[i] = key;
+
+        ssnt_insert(tracker, &key, strdup("foo"));
+    }
+
+    for(int i=0; i<NUM_ITS; i++) 
+        ssnt_lookup(tracker, &keys[i]);
+
+    for(int i=0; i<NUM_ITS; i++) 
+        ssnt_delete(tracker, &keys[i]);
+
+    gettimeofday(&tv, NULL);
+    uint64_t fin = 1000000 * tv.tv_sec + tv.tv_usec;
+    printf("%d inserts, lookups, and deletes: %f ms\n", NUM_ITS, float((fin - now))/1000);
+    ssnt_free(tracker);
+
+    bench_stl();
 }
 
 int main(int argc, char **argv) {
