@@ -66,7 +66,7 @@ void basic() {
     ssnt_free(tracker);
 }
 
-#define NUM_ITS 2 // 4096*2
+#define NUM_ITS 4096*2
 void fuzz() {
     // Random adds, deletes, and timeouts
     printf("%s\n", __func__);
@@ -174,13 +174,12 @@ void timeouts() {
 
 struct key_cmp {
     bool operator()(const ssnt_key_t &k1, const ssnt_key_t &k2) const {
-        return memcmp((void*)&k1, (void*)&k2, sizeof(ssnt_key_t)) == -1;
+        return memcmp((void*)&k1, (void*)&k2, sizeof(ssnt_key_t)) < 0;
     }
 };
 
 void bench_stl() {
 // Not yet working
-#if 0
     std::map<ssnt_key_t, char *, key_cmp> tree;
     std::list<ssnt_key_t> to;
 
@@ -206,17 +205,13 @@ void bench_stl() {
 
     for(int i=0; i<NUM_ITS; i++) {
         auto it = tree.find(keys[i]);
-        assert(it != tree.end());
-        assert(!strcmp("foo", it->second));
         // TODO: to simulate, pop from list then push onto list
         // to.push_front(key);
     }
 
     for(int i=0; i<NUM_ITS; i++) {
         auto it = tree.find(keys[i]);
-        assert(it != tree.end());
-        free(it->second);
-        //tree.erase(keys[i]);
+        tree.erase(keys[i]);
         to.pop_front();
     }
 
@@ -225,7 +220,6 @@ void bench_stl() {
     printf("STL map (without overhead from timeouts): " 
             "%d inserts, lookups, and deletes: %f ms\n", 
             NUM_ITS, float((fin - now))/1000);
-#endif
 }
 
 void bench() {
