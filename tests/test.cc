@@ -9,7 +9,7 @@
 #include <list>
 #include "ssn_track.h"
 
-void ssnt_debug_struct(ssnt_t *table);
+extern "C" void ssnt_debug_struct(ssnt_t *table);
 
 void free_cb(void *p) {
     free(p);
@@ -107,7 +107,7 @@ void fuzz() {
         }
 
         if(tracker->stats.collisions > 5) {
-            printf("Exceeded max number of collisions after %d inserts\n", 
+            printf("Exceeded max number of collisions with %d inserted\n", 
                 tracker->stats.inserted);
             abort();
         }
@@ -138,10 +138,12 @@ void timeouts() {
     key.sip = 3;
     ssnt_insert(tracker, &key, strdup("baz"));
 
+    assert(tracker->stats.collisions == 0);
+
     puts("Forcing timeout");
     // Timeout oldest
     sleep(1);
-    ssnt_timeout_update(tracker, 2);
+    ssnt_timeout_old(tracker, 2);
     key.sip = 1;
     assert(!ssnt_lookup(tracker, &key));
 
@@ -158,7 +160,7 @@ void timeouts() {
     sleep(2);
     puts("Timing out remaining");
     // Timeout without doing an operation
-    ssnt_timeout_update(tracker, 2);
+    ssnt_timeout_old(tracker, 2);
 
     ssnt_debug_struct(tracker);
 
@@ -179,7 +181,6 @@ struct key_cmp {
 };
 
 void bench_stl() {
-// Not yet working
     std::map<ssnt_key_t, char *, key_cmp> tree;
     std::list<ssnt_key_t> to;
 
@@ -203,21 +204,26 @@ void bench_stl() {
         to.push_front(key);
     }
 
-    for(int i=0; i<NUM_ITS; i++) {
-        auto it = tree.find(keys[i]);
-        // TODO: to simulate, pop from list then push onto list
-        // to.push_front(key);
+    for(int i=0; i<NUM_ITS*10; i++) {
+        uint64_t k = rand() % NUM_ITS;
+        auto it = tree.find(keys[k]);
+        // assert(it != tree.end());
+
+        // TODO: real simulation? Need to find actual node and move it
+        to.pop_front();
+        to.push_front(key);
     }
 
     for(int i=0; i<NUM_ITS; i++) {
         auto it = tree.find(keys[i]);
+        free(it->second);
         tree.erase(keys[i]);
         to.pop_front();
     }
 
     gettimeofday(&tv, NULL);
     uint64_t fin = 1000000 * tv.tv_sec + tv.tv_usec;
-    printf("STL map (without overhead from timeouts): " 
+    printf("STL map (*without overhead from timeouts*): "
             "%d inserts, lookups, and deletes: %f ms\n", 
             NUM_ITS, float((fin - now))/1000);
 }
@@ -250,15 +256,17 @@ void bench() {
         ssnt_insert(tracker, &key, strdup("foo"));
     }
 
-    for(int i=0; i<NUM_ITS; i++) 
-        ssnt_lookup(tracker, &keys[i]);
+    for(int i=0; i<NUM_ITS*10; i++) {
+        uint64_t k = rand() % NUM_ITS;
+        ssnt_lookup(tracker, &keys[k]);
+    }
 
     for(int i=0; i<NUM_ITS; i++) 
         ssnt_delete(tracker, &keys[i]);
 
     gettimeofday(&tv, NULL);
     uint64_t fin = 1000000 * tv.tv_sec + tv.tv_usec;
-    printf("%d inserts, lookups, and deletes: %f ms\n", NUM_ITS, float((fin - now))/1000);
+    printf("%d inserts, %d lookups, and deletes: %f ms\n", NUM_ITS, NUM_ITS*10, float((fin - now))/1000);
     ssnt_free(tracker);
 
     bench_stl();
