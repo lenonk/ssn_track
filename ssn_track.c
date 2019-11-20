@@ -90,6 +90,10 @@ ssnt_row_t *ssnt_new_row() {
     return row;
 };
 
+ssnt_t *ssnt_new_defaults(void (*free_cb)(void *)) {
+    return ssnt_new(SSNT_DEFAULT_NUM_ROWS, SSNT_DEFAULT_TIMEOUT, free_cb);
+}
+
 ssnt_t *ssnt_new(uint32_t rows, uint32_t timeout_seconds, void (*free_cb)(void *)) {
     ssnt_t *table = (ssnt_t*)malloc(sizeof(ssnt_t));
     if(!table)

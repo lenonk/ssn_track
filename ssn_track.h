@@ -80,6 +80,7 @@ typedef struct _ssnt_t {
 extern "C" {
 #endif
 
+ssnt_t *ssnt_new_defaults(void (*free_cb)(void *));
 ssnt_t *ssnt_new(uint32_t rows, uint32_t timeout_seconds, void (*free_cb)(void *));
 // Needs test case
 // ssnt_t *ssnt_resize(ssnt_t *existing, uint32_t new_size);

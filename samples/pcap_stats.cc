@@ -124,7 +124,7 @@ int main(int argc, char **argv) {
         return -1;
     }
 
-    ssnt_t *tracker = ssnt_new(free_data_cb);
+    ssnt_t *tracker = ssnt_new(SSNT_DEFAULT_NUM_ROWS, SSNT_DEFAULT_TIMEOUT, free_data_cb);
 
     char errbuf[PCAP_ERRBUF_SIZE];
     pcap_t *ph;
