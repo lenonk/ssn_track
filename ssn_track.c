@@ -270,7 +270,10 @@ void _ssnt_timeout_remove(ssnt_lru_t *timeouts, ssnt_lru_node_t *node) {
 }
 
 static int key_eq(ssnt_key_t *k1, ssnt_key_t *k2) {
-    return !memcmp(k1, k2, sizeof(ssnt_key_t));
+    return k1->sip == k2->sip && 
+           k1->sport == k2->sport &&
+           k1->dip == k2->dip && 
+           k1->dport == k2->dport;
 }
 
 // Hash func: XOR32
