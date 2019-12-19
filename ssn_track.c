@@ -9,11 +9,10 @@
 #include <stdio.h>
 #include <assert.h>
 #include <openssl/md5.h>
+#include <pthread.h>
 #include "ssn_track.h"
 
 ssnt_config_t ssnt_config = { SSNT_DEFAULT_NUM_ROWS, SSNT_DEFAULT_TIMEOUT, SSNT_INFO };
-
-static int64_t _lookup(ssnt_t *table, ssnt_key_t *key);
 
 void debug(const char *args, ...) {
     if(ssnt_config.log_level > SSNT_DEBUG)
@@ -244,8 +243,6 @@ void ssnt_timeout_update(ssnt_t *table, ssnt_row_t *row, uint64_t idx) {
 
     if(!node->next)
         timeouts->tail = node;
-    else
-        ssnt_timeout_old(table, table->timeout);
 }
 
 void _ssnt_timeout_remove(ssnt_lru_t *timeouts, ssnt_lru_node_t *node) {
@@ -270,10 +267,17 @@ void _ssnt_timeout_remove(ssnt_lru_t *timeouts, ssnt_lru_node_t *node) {
 }
 
 static int key_eq(ssnt_key_t *k1, ssnt_key_t *k2) {
-    return k1->sip == k2->sip && 
-           k1->sport == k2->sport &&
-           k1->dip == k2->dip && 
-           k1->dport == k2->dport;
+    return ((k1->sip == k2->sip &&
+            k1->sport == k2->sport &&
+            k1->dip == k2->dip && 
+            k1->dport == k2->dport)
+                ||
+           (k1->sip == k2->dip && 
+            k1->sport == k2->dport &&
+            k1->dip == k2->sip && 
+            k1->dport == k2->sport))
+                && 
+           k1->vlan == k2->vlan;
 }
 
 // Hash func: XOR32
@@ -334,6 +338,8 @@ ssnt_stat_t ssnt_insert(ssnt_t *table, ssnt_key_t *key, void *data) {
     if(!data)
         return SSNT_EXCEPTION;
 
+    ssnt_timeout_old(table, table->timeout);
+
     if(table->stats.inserted * 8 > table->num_rows)
         return SSNT_FULL;
 
@@ -354,7 +360,6 @@ ssnt_stat_t ssnt_insert(ssnt_t *table, ssnt_key_t *key, void *data) {
 
     ssnt_timeout_update(table, row, idx);
 
-    // ssnt_debug_struct(table);
     return SSNT_OK;
 }
 
@@ -364,12 +369,13 @@ void *ssnt_lookup(ssnt_t *table, ssnt_key_t *key) {
     if(idx < 0)
         return NULL;
 
+    ssnt_timeout_old(table, table->timeout);
+
     ssnt_row_t *row = table->rows[idx];
 
     if(!row->data)
         return NULL;
 
-    // debug("Looked up %d", idx);
     ssnt_timeout_update(table, row, idx);
 
     return row->data;

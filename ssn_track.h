@@ -11,7 +11,7 @@
 #include <sys/types.h>
 #include <time.h>
 
-#define SSNT_DEFAULT_NUM_ROWS 1000003 // <-- large prime
+#define SSNT_DEFAULT_NUM_ROWS 101197 // 1000003 // <-- large prime
 #define SSNT_DEFAULT_TIMEOUT 60 // seconds
 
 typedef enum _ssnt_stat_t {

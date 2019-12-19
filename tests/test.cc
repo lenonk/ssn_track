@@ -10,6 +10,7 @@
 #include "ssn_track.h"
 
 extern "C" void ssnt_debug_struct(ssnt_t *table);
+extern ssnt_config_t ssnt_config;
 
 void free_cb(void *p) {
     free(p);
@@ -25,48 +26,54 @@ void basic() {
     // Bzero'ing to clean up pad bytes. Needed to prevent valgrind from complaining
     bzero(&key, sizeof(key)); 
 
-    // Add three
-    key = { 1, 2, 3, 4, 5};
+    // (ip, ip, port, port, vlan)
+    key = { 10, 200, 3000, 4000, 5};
+    // Add three (changing source IP)
     ssnt_insert(tracker, &key, strdup("foo"));
-    key.sip = 2;
+    key.sip = 20;
     ssnt_insert(tracker, &key, strdup("bar"));
-    key.sip = 3;
+    key.sip = 30;
     ssnt_insert(tracker, &key, strdup("baz"));
 
     // Lookup each
     char *data;
-    key.sip = 1;
+    key.sip = 10;
     data = (char*)ssnt_lookup(tracker, &key);
     assert(!strcmp(data, "foo"));
 
-    key.sip = 2;
+    key.sip = 20;
     data = (char*)ssnt_lookup(tracker, &key);
     assert(!strcmp(data, "bar"));
 
-    key.sip = 3;
+    key.sip = 30;
     data = (char*)ssnt_lookup(tracker, &key);
     assert(!strcmp(data, "baz"));
 
-    key.sip = 2;
+    // Swap source and IP, should get same session data
+    ssnt_key_t key2 = { 200, 30, 4000, 3000, 5};
+    data = (char*)ssnt_lookup(tracker, &key2);
+    assert(!strcmp(data, "baz"));
+
+    key.sip = 20;
     ssnt_delete(tracker, &key);
 
-    key.sip = 1;
+    key.sip = 10;
     ssnt_delete(tracker, &key);
     assert(!ssnt_lookup(tracker, &key));
     // Already deleted
     ssnt_delete(tracker, &key);
     assert(!ssnt_lookup(tracker, &key));
-    key.sip = 2;
+    key.sip = 20;
     ssnt_delete(tracker, &key);
     assert(!ssnt_lookup(tracker, &key));
-    key.sip = 3;
+    key.sip = 30;
     ssnt_delete(tracker, &key);
     assert(!ssnt_lookup(tracker, &key));
 
     ssnt_free(tracker);
 }
 
-#define NUM_ITS 4096*2
+#define NUM_ITS 100 // 4096*2
 void fuzz() {
     // Random adds, deletes, and timeouts
     printf("%s\n", __func__);
@@ -113,10 +120,26 @@ void fuzz() {
         }
     }
 
-    assert(tracker->stats.timeouts > 1);
+    // Just do a number of random lookups
+    for(int i=0; i<NUM_ITS*5; i++) {
+        int k = rand() % (sizeof(keys)/sizeof(keys[0]));
+
+        if(!(i % 5)) {
+            printf(".");
+            fflush(stdout);
+        }
+
+        ssnt_lookup(tracker, &keys[k]);
+    }
+
+    // Make sure everything gets timed out naturally
+    sleep(1);
+    int k = rand() % (sizeof(keys)/sizeof(keys[0]));
+    ssnt_lookup(tracker, &keys[k]);
     ssnt_debug_struct(tracker);
 
-    puts("");
+    // Timeouts only happen on updates, so will always be 1 behind
+    assert(tracker->stats.timeouts == NUM_ITS);
     ssnt_free(tracker);
 }
 
@@ -273,10 +296,11 @@ void bench() {
 }
 
 int main(int argc, char **argv) {
+    ssnt_config.log_level = SSNT_DEBUG;
     basic();
     timeouts();
-    bench();
     fuzz();
+    bench();
     // TODO: check hash distrib?
     return 0;
 }
