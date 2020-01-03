@@ -58,7 +58,7 @@ void usage() {
 
 void pcap_cb(uint8_t *args, const struct pcap_pkthdr *header, const uint8_t *packet)
 {
-    ssnt_t *tracker = (ssnt_t*)args;
+    dsh_t *tracker = (dsh_t*)args;
 
     iph_t *ip = (iph_t*)(packet + SIZE_ETHERNET);
 
@@ -91,8 +91,8 @@ void pcap_cb(uint8_t *args, const struct pcap_pkthdr *header, const uint8_t *pac
     }
     */
 
-    ssnt_key_t key = { ip->ip_src.s_addr, ip->ip_dst.s_addr, tcp->th_sport, tcp->th_dport, 0 };
-    ssn_data_t *ssn = (ssn_data_t*)ssnt_lookup(tracker, &key);
+    dsh_key_t key = { ip->ip_src.s_addr, ip->ip_dst.s_addr, tcp->th_sport, tcp->th_dport, 0 };
+    ssn_data_t *ssn = (ssn_data_t*)dsh_lookup(tracker, &key);
 
     if(!ssn) {
         // New session
@@ -102,8 +102,8 @@ void pcap_cb(uint8_t *args, const struct pcap_pkthdr *header, const uint8_t *pac
 
         ssn = new ssn_data_t;
         ssn->count = 0;
-        ssnt_stat_t stat = ssnt_insert(tracker, &key, ssn);
-        if(stat != SSNT_OK) {
+        dsh_stat_t stat = dsh_insert(tracker, &key, ssn);
+        if(stat != DSH_OK) {
             printf("Failed to save session: %d\n", stat);
             exit(-1);
         }
@@ -124,7 +124,7 @@ int main(int argc, char **argv) {
         return -1;
     }
 
-    ssnt_t *tracker = ssnt_new(SSNT_DEFAULT_NUM_ROWS, SSNT_DEFAULT_TIMEOUT, free_data_cb);
+    dsh_t *tracker = dsh_new(DSH_DEFAULT_NUM_ROWS, DSH_DEFAULT_TIMEOUT, free_data_cb);
 
     char errbuf[PCAP_ERRBUF_SIZE];
     pcap_t *ph;
@@ -136,7 +136,7 @@ int main(int argc, char **argv) {
  
     pcap_loop(ph, 0, pcap_cb, (u_char*)tracker);
 
-    ssnt_free(tracker);
+    dsh_free(tracker);
 
     pcap_close(ph);
 }

@@ -9,8 +9,8 @@
 #include <list>
 #include "ssn_track.h"
 
-extern "C" void ssnt_debug_struct(ssnt_t *table);
-extern ssnt_config_t ssnt_config;
+extern "C" void dsh_debug_struct(dsh_t *table);
+extern dsh_config_t dsh_config;
 
 void free_cb(void *p) {
     free(p);
@@ -19,58 +19,63 @@ void free_cb(void *p) {
 void basic() {
     printf("%s\n", __func__);
 
-    // 16 rows, 5 minute timeout
-    ssnt_t *tracker = ssnt_new(16, 5*60, free_cb);
+    // 24 rows, 5 minute timeout
+    dsh_t *tracker = dsh_new(24, 5*60, free_cb);
 
-    ssnt_key_t key;
+    dsh_key_t key;
     // Bzero'ing to clean up pad bytes. Needed to prevent valgrind from complaining
     bzero(&key, sizeof(key)); 
 
     // (ip, ip, port, port, vlan)
     key = { 10, 200, 3000, 4000, 5};
     // Add three (changing source IP)
-    ssnt_insert(tracker, &key, strdup("foo"));
+    dsh_insert(tracker, &key, strdup("foo"));
     key.sip = 20;
-    ssnt_insert(tracker, &key, strdup("bar"));
+    dsh_insert(tracker, &key, strdup("bar"));
     key.sip = 30;
-    ssnt_insert(tracker, &key, strdup("baz"));
+    dsh_insert(tracker, &key, strdup("baz"));
 
     // Lookup each
     char *data;
     key.sip = 10;
-    data = (char*)ssnt_lookup(tracker, &key);
+    data = (char*)dsh_lookup(tracker, &key);
     assert(!strcmp(data, "foo"));
 
     key.sip = 20;
-    data = (char*)ssnt_lookup(tracker, &key);
+    data = (char*)dsh_lookup(tracker, &key);
     assert(!strcmp(data, "bar"));
 
+    // Confirm overwrite
+    dsh_insert(tracker, &key, strdup("barbarbar"));
+    data = (char*)dsh_lookup(tracker, &key);
+    assert(!strcmp(data, "barbarbar"));
+
     key.sip = 30;
-    data = (char*)ssnt_lookup(tracker, &key);
+    data = (char*)dsh_lookup(tracker, &key);
     assert(!strcmp(data, "baz"));
 
     // Swap source and IP, should get same session data
-    ssnt_key_t key2 = { 200, 30, 4000, 3000, 5};
-    data = (char*)ssnt_lookup(tracker, &key2);
+    dsh_key_t key2 = { 200, 30, 4000, 3000, 5};
+    data = (char*)dsh_lookup(tracker, &key2);
     assert(!strcmp(data, "baz"));
 
     key.sip = 20;
-    ssnt_delete(tracker, &key);
+    dsh_delete(tracker, &key);
 
     key.sip = 10;
-    ssnt_delete(tracker, &key);
-    assert(!ssnt_lookup(tracker, &key));
+    dsh_delete(tracker, &key);
+    assert(!dsh_lookup(tracker, &key));
     // Already deleted
-    ssnt_delete(tracker, &key);
-    assert(!ssnt_lookup(tracker, &key));
+    dsh_delete(tracker, &key);
+    assert(!dsh_lookup(tracker, &key));
     key.sip = 20;
-    ssnt_delete(tracker, &key);
-    assert(!ssnt_lookup(tracker, &key));
+    dsh_delete(tracker, &key);
+    assert(!dsh_lookup(tracker, &key));
     key.sip = 30;
-    ssnt_delete(tracker, &key);
-    assert(!ssnt_lookup(tracker, &key));
+    dsh_delete(tracker, &key);
+    assert(!dsh_lookup(tracker, &key));
 
-    ssnt_free(tracker);
+    dsh_free(tracker);
 }
 
 #define NUM_ITS 100 // 4096*2
@@ -80,15 +85,15 @@ void fuzz() {
 
     // Make repeatable
     srand(1);
-    ssnt_t *tracker = ssnt_new(SSNT_DEFAULT_NUM_ROWS, 1, free_cb);
+    dsh_t *tracker = dsh_new(DSH_DEFAULT_NUM_ROWS, 1, free_cb);
 
-    ssnt_key_t key;
+    dsh_key_t key;
     // Bzero'ing to clean up pad bytes and prevent valgrind from complaining
     bzero(&key, sizeof(key)); 
     key.dport = (uint16_t)rand();
     key.dip = rand();
 
-    ssnt_key_t keys[NUM_ITS];
+    dsh_key_t keys[NUM_ITS];
     memset(&keys, 0, sizeof(keys));
 
     for(int i=0; i<NUM_ITS; i++) {
@@ -96,7 +101,7 @@ void fuzz() {
         key.sport = (uint16_t)rand();
         keys[i] = key;
 
-        assert(ssnt_insert(tracker, &key, strdup("foo")) == SSNT_OK);
+        assert(dsh_insert(tracker, &key, strdup("foo")) == DSH_OK);
         usleep(5000); // Sleeping to help exercise the timeout code later
         if(!(i % 5)) {
             printf(".");
@@ -109,8 +114,8 @@ void fuzz() {
             // No way to know which was timeed out ATM, so just ignore the 
             // result and rely on valgrind to catch any issues for now
             // This forces the timeout code to rearrange the LRU
-            // assert(!strcmp((char*)ssnt_lookup(tracker, &keys[rand() % i]), "foo"));
-            ssnt_lookup(tracker, &keys[rand() % i]);
+            // assert(!strcmp((char*)dsh_lookup(tracker, &keys[rand() % i]), "foo"));
+            dsh_lookup(tracker, &keys[rand() % i]);
         }
 
         if(tracker->stats.collisions > 5) {
@@ -129,90 +134,90 @@ void fuzz() {
             fflush(stdout);
         }
 
-        ssnt_lookup(tracker, &keys[k]);
+        dsh_lookup(tracker, &keys[k]);
     }
 
     // Make sure everything gets timed out naturally
     sleep(1);
     int k = rand() % (sizeof(keys)/sizeof(keys[0]));
-    ssnt_lookup(tracker, &keys[k]);
-    ssnt_debug_struct(tracker);
+    dsh_lookup(tracker, &keys[k]);
+    dsh_debug_struct(tracker);
 
     // Timeouts only happen on updates, so will always be 1 behind
     assert(tracker->stats.timeouts == NUM_ITS);
-    ssnt_free(tracker);
+    dsh_free(tracker);
 }
 
 void timeouts() {
     printf("%s\n", __func__);
     // 16 rows, 2 second timeout
-    ssnt_t *tracker = ssnt_new(16, 2, free_cb);
+    dsh_t *tracker = dsh_new(16, 2, free_cb);
 
-    ssnt_key_t key;
+    dsh_key_t key;
     // Bzero'ing to clean up pad bytes and prevent valgrind from complaining
     bzero(&key, sizeof(key)); 
     
     // Add three
     key = { 1, 2, 3, 4, 5};
-    ssnt_insert(tracker, &key, strdup("foo"));
+    dsh_insert(tracker, &key, strdup("foo"));
     sleep(1);
     key.sip = 2;
-    ssnt_insert(tracker, &key, strdup("bar"));
+    dsh_insert(tracker, &key, strdup("bar"));
     key.sip = 3;
-    ssnt_insert(tracker, &key, strdup("baz"));
+    dsh_insert(tracker, &key, strdup("baz"));
 
     assert(tracker->stats.collisions == 0);
 
     puts("Forcing timeout");
     // Timeout oldest
     sleep(1);
-    ssnt_timeout_old(tracker, 2);
+    dsh_timeout_old(tracker, 2);
     key.sip = 1;
-    assert(!ssnt_lookup(tracker, &key));
+    assert(!dsh_lookup(tracker, &key));
 
     // Put it back
-    ssnt_insert(tracker, &key, strdup("foo"));
+    dsh_insert(tracker, &key, strdup("foo"));
     // Lookup each remaining
     key.sip = 2;
-    assert(!strcmp((char*)ssnt_lookup(tracker, &key), "bar"));
+    assert(!strcmp((char*)dsh_lookup(tracker, &key), "bar"));
     key.sip = 3;
-    assert(!strcmp((char*)ssnt_lookup(tracker, &key), "baz"));
+    assert(!strcmp((char*)dsh_lookup(tracker, &key), "baz"));
 
-    ssnt_debug_struct(tracker);
+    dsh_debug_struct(tracker);
 
     sleep(2);
     puts("Timing out remaining");
     // Timeout without doing an operation
-    ssnt_timeout_old(tracker, 2);
+    dsh_timeout_old(tracker, 2);
 
-    ssnt_debug_struct(tracker);
+    dsh_debug_struct(tracker);
 
-    assert(!ssnt_lookup(tracker, &key));
+    assert(!dsh_lookup(tracker, &key));
     key.sip = 2;
-    assert(!ssnt_lookup(tracker, &key));
+    assert(!dsh_lookup(tracker, &key));
 
     // The lookups will have changed the placement in the LRU
     // Make sure the timeouts work as expected
    
-    ssnt_free(tracker);
+    dsh_free(tracker);
 }
 
 struct key_cmp {
-    bool operator()(const ssnt_key_t &k1, const ssnt_key_t &k2) const {
-        return memcmp((void*)&k1, (void*)&k2, sizeof(ssnt_key_t)) < 0;
+    bool operator()(const dsh_key_t &k1, const dsh_key_t &k2) const {
+        return memcmp((void*)&k1, (void*)&k2, sizeof(dsh_key_t)) < 0;
     }
 };
 
 void bench_stl() {
-    std::map<ssnt_key_t, char *, key_cmp> tree;
-    std::list<ssnt_key_t> to;
+    std::map<dsh_key_t, char *, key_cmp> tree;
+    std::list<dsh_key_t> to;
 
-    ssnt_key_t key;
+    dsh_key_t key;
     bzero(&key, sizeof(key)); 
     key.dport = (uint16_t)rand();
     key.dip = rand();
 
-    ssnt_key_t keys[NUM_ITS];
+    dsh_key_t keys[NUM_ITS];
     memset(&keys, 0, sizeof(keys));
 
     struct timeval tv;
@@ -256,15 +261,15 @@ void bench() {
 
     // Make repeatable
     srand(1);
-    ssnt_t *tracker = ssnt_new(SSNT_DEFAULT_NUM_ROWS, 1, free_cb);
+    dsh_t *tracker = dsh_new(DSH_DEFAULT_NUM_ROWS, 1, free_cb);
 
-    ssnt_key_t key;
+    dsh_key_t key;
     // Bzero'ing to clean up pad bytes and prevent valgrind from complaining
     bzero(&key, sizeof(key)); 
     key.dport = (uint16_t)rand();
     key.dip = rand();
 
-    ssnt_key_t keys[NUM_ITS];
+    dsh_key_t keys[NUM_ITS];
     memset(&keys, 0, sizeof(keys));
 
     struct timeval tv;
@@ -276,27 +281,27 @@ void bench() {
         key.sport = (uint16_t)rand();
         keys[i] = key;
 
-        ssnt_insert(tracker, &key, strdup("foo"));
+        dsh_insert(tracker, &key, strdup("foo"));
     }
 
     for(int i=0; i<NUM_ITS*10; i++) {
         uint64_t k = rand() % NUM_ITS;
-        ssnt_lookup(tracker, &keys[k]);
+        dsh_lookup(tracker, &keys[k]);
     }
 
     for(int i=0; i<NUM_ITS; i++) 
-        ssnt_delete(tracker, &keys[i]);
+        dsh_delete(tracker, &keys[i]);
 
     gettimeofday(&tv, NULL);
     uint64_t fin = 1000000 * tv.tv_sec + tv.tv_usec;
     printf("%d inserts, %d lookups, and deletes: %f ms\n", NUM_ITS, NUM_ITS*10, float((fin - now))/1000);
-    ssnt_free(tracker);
+    dsh_free(tracker);
 
     bench_stl();
 }
 
 int main(int argc, char **argv) {
-    ssnt_config.log_level = SSNT_DEBUG;
+    dsh_config.log_level = DSH_DEBUG;
     basic();
     timeouts();
     fuzz();

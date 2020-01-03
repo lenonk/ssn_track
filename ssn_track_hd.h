@@ -1,7 +1,7 @@
 #pragma once
 /*
  * @author  Adam Keeton <ajkeeton@gmail.com>
- * Copyright (C) 2009-2019 Adam Keeton
+ * Copyright (C) 2009-2020 Adam Keeton
  * TCP session tracker, with timeouts. Uses a "blue-green" mechanism for 
  * timeouts and automatic hash resizing. Resizing and timeouts are handled in 
  * their own thread
@@ -12,59 +12,61 @@
 #include <sys/types.h>
 #include <stdbool.h>
 #include <time.h>
+#include "primes.h"
 
-#define SSNT_DEFAULT_NUM_ROWS 101197 // 1000003 // <-- large prime
-#define SSNT_DEFAULT_TIMEOUT 60 // seconds
-#define SSNT_DEFAULT_REFRESH_PERIOD 60 // seconds
+#define BGH_DEFAULT_TIMEOUT 60 // seconds
+#define BGH_DEFAULT_REFRESH_PERIOD 120 // seconds
+// When num_rows * hash_full_pct < number inserted, hash is considered 
+// full and we won't insert.
+#define BGH_DEFAULT_HASH_FULL_PCT 8.0 // 8 percent
 
-typedef enum _ssnt_stat_t {
-    SSNT_OK,
-    SSNT_FULL,
-    SSNT_ALLOC_FAILED,
-    SSNT_MEM_EXCEPTION,
-    SSNT_EXCEPTION
-} ssnt_stat_t;
+typedef enum _bgh_stat_t {
+    BGH_OK,
+    BGH_FULL,
+    BGH_ALLOC_FAILED,
+    BGH_MEM_EXCEPTION,
+    BGH_EXCEPTION
+} bgh_stat_t;
 
-enum ssnt_log_level_t {
-    SSNT_DEBUG,
-    SSNT_INFO,
-    SSNT_ERROR
-};
+typedef struct _bgh_config_t {
+    uint64_t starting_rows,
+             min_rows,
+             max_rows;
+    uint32_t timeout, // Seconds
+             refresh_period; // Seconds
+    float hash_full_pct;
+} bgh_config_t;
 
-typedef struct _ssnt_key_t {
+typedef struct _bgh_key_t {
     uint32_t sip, dip;
     uint16_t sport, dport;
     uint8_t vlan;
-} ssnt_key_t;
+} bgh_key_t;
 
-typedef struct _ssnt_row_t {
+typedef struct _bgh_row_t {
     void *data;
-    ssnt_key_t key;
-} ssnt_row_t;
+    // Necessary to prevent drained or deleted rows from preventing lookups 
+    // from working when there had been a collision
+    bool deleted; 
+    bgh_key_t key;
+} bgh_row_t;
 
-typedef struct _ssnt_config_t {
-    uint32_t init_num_rows,
-             refresh_period,
-             timeout;
-    int log_level;
-} ssnt_config_t;
-
-typedef struct _ssnt_tbl_t {
+typedef struct _bgh_tbl_t {
     // The callback to clean up user data
     void (*free_cb)(void *);
 
     // Running stats for this table
     // "collisions" considered when resizing the next hash
     uint64_t inserted, 
-             collisions;
+             collisions,
+             max_inserts;
 
     uint64_t num_rows;
-    ssnt_row_t **rows;
-} ssnt_tbl_t;
+    bgh_row_t **rows;
+} bgh_tbl_t;
 
-typedef struct _ssnt_t {
-    uint64_t refresh_period,
-             timeout;
+typedef struct _bgh_t {
+    bgh_config_t config;
 
     bool running,
          refreshing;
@@ -72,24 +74,37 @@ typedef struct _ssnt_t {
     pthread_t refresh;
 
     // Our active table
-    ssnt_tbl_t *active;
+    bgh_tbl_t *active;
 
-    // Our on-deck table
-    ssnt_tbl_t *standby;
-} ssnt_t;
+    // Our standby table, used when refreshing
+    bgh_tbl_t *standby;
+} bgh_t;
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-ssnt_t *ssnt_new_defaults(void (*free_cb)(void *));
-ssnt_t *ssnt_new(uint64_t rows, uint32_t timeout_seconds, void (*free_cb)(void *));
-void ssnt_free(ssnt_t *);
-void *ssnt_lookup(ssnt_t *tracker, ssnt_key_t *key);
-ssnt_stat_t ssnt_insert(ssnt_t *tracker, ssnt_key_t *key, void *data);
-void ssnt_delete(ssnt_t *tracker, ssnt_key_t *key);
+// Allocate new session tracker using default config
+bgh_t *bgh_new(void (*free_cb)(void *));
 
-extern ssnt_config_t ssnt_config;
+// Allocate new session tracker using user config
+bgh_t *bgh_config_new(bgh_config_t *config, void (*free_cb)(void *));
+
+// Initialize a configuration with the default values
+void bgh_config_init(bgh_config_t *config);
+
+// Free session tracker
+void bgh_free(bgh_t *tracker);
+
+// Lookup entry
+void *bgh_lookup(bgh_t *tracker, bgh_key_t *key);
+
+// Insert entry
+bgh_stat_t bgh_insert(bgh_t *tracker, bgh_key_t *key, void *data);
+
+// Delete entry 
+void bgh_clear(bgh_t *tracker, bgh_key_t *key);
+
 #ifdef __cplusplus
 }
 #endif
