@@ -9,4 +9,7 @@ add_subdirectory(samples)
 add_subdirectory(tests)
 target_link_libraries(ssn_track crypto)
 
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g -O2")
+add_library(ssn_track_hd ssn_track_hd.c)
+target_link_libraries(ssn_track_hd crypto)
+
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g")
