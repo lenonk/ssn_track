@@ -12,7 +12,7 @@
 #include <openssl/md5.h>
 #include <pthread.h>
 #include <unistd.h>
-#include "ssn_track_hd.h"
+#include "bgh.h"
 
 void bgh_config_init(bgh_config_t *config) {
     int len = sizeof(primes)/sizeof(primes[0]);

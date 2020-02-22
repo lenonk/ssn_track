@@ -7,7 +7,7 @@
 #include <sys/time.h>
 #include <map>
 #include <list>
-#include "ssn_track_hd.h"
+#include "../bgh/bgh.h"
 
 extern "C" {
 void *_draining_lookup_active(
@@ -16,7 +16,8 @@ void *_draining_prefer_standby(
         bgh_tbl_t *active, bgh_tbl_t *standby, bgh_key_t *key);
 bgh_stat_t bgh_insert_table(bgh_tbl_t *tbl, bgh_key_t *key, void *data);
 int64_t _lookup(bgh_tbl_t *table, bgh_key_t *key);
-bgh_tbl_t *bgh_new_tbl(uint64_t rows, uint64_t max_inserts, void (*free_cb)(void *));
+bgh_tbl_t 
+    *bgh_new_tbl(uint64_t rows, uint64_t max_inserts, void (*free_cb)(void *));
 };
 
 void free_cb(void *p) {

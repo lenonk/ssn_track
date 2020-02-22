@@ -10,7 +10,8 @@
 #include <assert.h>
 #include <openssl/md5.h>
 #include <pthread.h>
-#include "ssn_track.h"
+#include <stdbool.h>
+#include "dsh.h"
 
 dsh_config_t dsh_config = { DSH_DEFAULT_NUM_ROWS, DSH_DEFAULT_TIMEOUT, DSH_INFO };
 
@@ -149,7 +150,6 @@ void dsh_timeout_old(dsh_t *table, int max_age) {
     // dsh_debug_struct(table);
 
     dsh_lru_t *timeouts = table->timeouts;
-    dsh_lru_node_t *oldest = timeouts->tail;
 
     for(dsh_lru_node_t *current = timeouts->tail; current; ) {
         if((now - current->last) < max_age) {
@@ -297,7 +297,7 @@ static int64_t _lookup(dsh_t *table, dsh_key_t *key) {
         if(idx >= table->num_rows)
             idx = 0;
 
-        bgh_row_t *row = table->rows[idx];
+        dsh_row_t *row = table->rows[idx];
 
         if(key_eq(key, &row->key)) {
             // if previous row has been deleted, move this row's data up one
