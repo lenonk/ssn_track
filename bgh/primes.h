@@ -1,34 +1,8 @@
+#pragma once
+#include <stdint.h>
 
-static uint64_t primes[] = {
-	50047,
-	100003,
-	200003,
-	300043,
-	400067,
-	500107,
-	600101,
-	700027,
-	800029,
-	900091,
-	1000117,
-	2000081,
-	3000017,
-	4000081,
-	5000153,
-	5500003,
-	6000101,
-	6500059,
-	7000003,
-	7500061,
-	8000071,
-	8500021,
-	9000143,
-	9500143,
-	10000141,
-	11000081,
-	12000097,
-	13000133,
-	14000071,
-	15000017,
-	15485783,
-};
+int prime_total();
+uint64_t prime_at_idx(int idx);
+int prime_nearest_idx(uint64_t val);
+uint64_t prime_larger_idx(int idx);
+uint64_t prime_smaller_idx(int idx);

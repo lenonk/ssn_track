@@ -7,7 +7,7 @@
 #include <sys/time.h>
 #include <map>
 #include <list>
-#include "ssn_track.h"
+#include "../dsh/dsh.h"
 
 extern "C" void dsh_debug_struct(dsh_t *table);
 extern dsh_config_t dsh_config;

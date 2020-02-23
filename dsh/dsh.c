@@ -300,20 +300,6 @@ static int64_t _lookup(dsh_t *table, dsh_key_t *key) {
         dsh_row_t *row = table->rows[idx];
 
         if(key_eq(key, &row->key)) {
-            // if previous row has been deleted, move this row's data up one
-            // this has the effect of gradually resolving collisions as data is
-            // cleared
-            // The check for idx != 0 just ignores an edge case rather than add
-            // extra logic for it
-            if((idx != 0) && table->rows[idx-1]->deleted) {
-                table->rows[idx-1]->data = table->rows[idx]->data;
-                table->rows[idx-1]->deleted = false;
-                table->rows[idx]->deleted = true;
-                table->rows[idx]->data = NULL;
-                table->stats.collisions--;
-                idx--;
-            }
-
             // Intentionally ignoring the collision count here. Otherwise, we 
             // wind up counting extra collisions every time we look up this row
             return idx;

@@ -13,16 +13,25 @@
 #include <pthread.h>
 #include <unistd.h>
 #include "bgh.h"
+#include "primes.h"
 
 void bgh_config_init(bgh_config_t *config) {
-    int len = sizeof(primes)/sizeof(primes[0]);
+    int len = prime_total();
 
-    config->starting_rows = primes[len/2];
-    config->min_rows = primes[0];
-    config->max_rows = primes[len-1];
+    config->starting_rows = prime_at_idx(len/2); 
+    config->min_rows = prime_at_idx(0);
+    config->max_rows = prime_at_idx(len);
     config->timeout = BGH_DEFAULT_TIMEOUT;
     config->refresh_period = BGH_DEFAULT_REFRESH_PERIOD;
     config->hash_full_pct = BGH_DEFAULT_HASH_FULL_PCT;
+
+    // Control scaling
+    // If the number of inserts > number rows * scale_up_pct
+    // Scale up
+    config->scale_up_pct = BGH_DEFAULT_HASH_FULL_PCT * 0.75;
+    // If the number of inserts < number rows * scale_down_pct
+    // Scale down
+    config->scale_down_pct = BGH_DEFAULT_HASH_FULL_PCT * 0.1;
 }
 
 bgh_row_t *bgh_new_row() {
@@ -73,11 +82,34 @@ bgh_tbl_t *bgh_new_tbl(uint64_t rows, uint64_t max_inserts, void (*free_cb)(void
     return tbl;
 }
 
+uint64_t _update_size(bgh_config_t *config, int idx, bgh_tbl_t *tbl) {
+    // TODO: incorporate a timeout
+
+    uint64_t next = 0;
+    if(config->scale_up_pct > 0 && (tbl->inserted > tbl->num_rows * config->scale_up_pct/100.0)) {
+        next = prime_larger_idx(idx);
+        if(next > config->max_rows)
+            return config->max_rows;
+        return next;
+    }
+
+    if(tbl->inserted < tbl->num_rows * config->scale_down_pct/100.0) {
+        next = prime_smaller_idx(idx);
+        if(next < config->min_rows)
+            return config->min_rows;
+        return next;
+    }
+
+    return tbl->num_rows;
+}
+
 static void *refresh_thread(void *ctx) {
     bgh_t *ssns = (bgh_t*)ctx;
     static time_t last = 0;
 
     last = time(NULL);
+
+    int pindex = prime_nearest_idx(ssns->config.starting_rows);
 
     while(ssns->running) {
         time_t now = time(NULL);
@@ -90,20 +122,17 @@ static void *refresh_thread(void *ctx) {
 
         last = now;
 
-        // Calc desired new num rows
-        // nrows = update_size(...)
-        // TODO: need prime num list, currently using old tbl size
-        uint64_t nrows = ssns->active->num_rows;
+        // Calc new hash size
+        uint64_t nrows = _update_size(&ssns->config, pindex, ssns->active);
+        uint64_t max_inserts = nrows * ssns->config.hash_full_pct/100.0;
 
         // Create new hash
-        ssns->standby = bgh_new_tbl(
-            nrows, 
-            nrows * ssns->config.hash_full_pct/100.0, 
-            ssns->active->free_cb);
+        ssns->standby = bgh_new_tbl(nrows, max_inserts, ssns->active->free_cb);
 
         if(!ssns->standby) {
-            // XXX Need way to handle this case gracefully
-            abort();
+            // XXX Need way to handle/report this case gracefully
+            // For now, just skip resize + timneout :/
+            continue;
         }
 
         ssns->refreshing = true;
@@ -171,18 +200,14 @@ void bgh_free(bgh_t *ssns) {
     free(ssns);
 }
 
-static int key_eq(bgh_key_t *k1, bgh_key_t *k2) {
-    return ((k1->sip == k2->sip &&
-            k1->sport == k2->sport &&
-            k1->dip == k2->dip && 
-            k1->dport == k2->dport)
-                ||
-           (k1->sip == k2->dip && 
-            k1->sport == k2->dport &&
-            k1->dip == k2->sip && 
-            k1->dport == k2->sport))
-                && 
-           k1->vlan == k2->vlan;
+static inline int key_eq(bgh_key_t *k1, bgh_key_t *k2) {
+    uint64_t *p1 = (uint64_t*)k1;
+    uint64_t *p2 = (uint64_t*)k2;
+
+    return 
+        ((p1[0] == p2[0] && p1[1] == p1[1]) ||
+        (p1[0] == p2[1] && p1[1] == p2[0])) &&
+        k1->vlan == k2->vlan;
 }
 
 // Hash func: XOR32
@@ -206,7 +231,23 @@ static inline uint64_t hash_func(uint64_t mask, bgh_key_t *key) {
     return h % mask;
 }
 
-int64_t _lookup(bgh_tbl_t *table, bgh_key_t *key) {
+bool _try_heal_collision(bgh_tbl_t *table, int64_t idx) {
+    // If previous row has been deleted, move this row's data up one.
+    // This has the effect of gradually resolving collisions as data is
+    // cleared.
+    // The check for !idx just ignores an edge case rather than add
+    // extra logic for it
+    if(!idx || !table->rows[idx-1]->deleted)
+        return false;
+
+    table->rows[idx-1]->data = table->rows[idx]->data;
+    table->rows[idx-1]->deleted = false;
+    table->rows[idx]->deleted = true;
+    table->rows[idx]->data = NULL;
+    return true;
+}
+
+int64_t _lookup_idx(bgh_tbl_t *table, bgh_key_t *key) {
     int64_t idx = hash_func(table->num_rows, key);
     bgh_row_t *row = table->rows[idx];
 
@@ -235,16 +276,7 @@ int64_t _lookup(bgh_tbl_t *table, bgh_key_t *key) {
         bgh_row_t *row = table->rows[idx];
 
         if(key_eq(key, &row->key)) {
-            // If previous row has been deleted, move this row's data up one.
-            // This has the effect of gradually resolving collisions as data is
-            // cleared.
-            // The check for idx != 0 just ignores an edge case rather than add
-            // extra logic for it
-            if((idx != 0) && table->rows[idx-1]->deleted) {
-                table->rows[idx-1]->data = table->rows[idx]->data;
-                table->rows[idx-1]->deleted = false;
-                table->rows[idx]->deleted = true;
-                table->rows[idx]->data = NULL;
+            if(_try_heal_collision(table, idx)) {
                 table->collisions--;
                 idx--;
             }
@@ -262,10 +294,47 @@ int64_t _lookup(bgh_tbl_t *table, bgh_key_t *key) {
         idx++;
     }
 
-    table->collisions += collisions;
     return -1;
 }
 
+bgh_row_t *_lookup_row(bgh_tbl_t *table, bgh_key_t *key) {
+    int64_t idx = hash_func(table->num_rows, key);
+    bgh_row_t *row = table->rows[idx];
+
+    if(key_eq(key, &row->key))
+        return row;
+
+    // If nothing is/was stored here, just return it anyway.
+    // We'll check later
+    // The check for 'deleted' is to handle the case where
+    // a collided row was moved
+    if(!row->data && !row->deleted)
+        return row;
+
+    uint64_t start = idx++;
+    while(idx != start) {
+        if(idx >= table->num_rows)
+            idx = 0;
+
+        bgh_row_t *row = table->rows[idx];
+
+        if(key_eq(key, &row->key)) {
+            _try_heal_collision(table, idx);
+
+            // Intentionally ignoring the collision count here. Otherwise, we 
+            // wind up counting extra collisions every time we look up this row
+            return row;
+        }
+
+        if(!row->data && !row->deleted) {
+            return row;
+        }
+
+        idx++;
+    }
+
+    return NULL;
+}
 bgh_stat_t bgh_insert_table(bgh_tbl_t *tbl, bgh_key_t *key, void *data) {
     // XXX Handle this case better ...
     // - should allow overwrites
@@ -273,7 +342,7 @@ bgh_stat_t bgh_insert_table(bgh_tbl_t *tbl, bgh_key_t *key, void *data) {
     if(tbl->inserted > tbl->max_inserts)
         return BGH_FULL;
 
-    int64_t idx = _lookup(tbl, key);
+    int64_t idx = _lookup_idx(tbl, key);
 
     if(idx < 0)
         return BGH_EXCEPTION;
@@ -308,72 +377,47 @@ bgh_stat_t bgh_insert(bgh_t *ssns, bgh_key_t *key, void *data) {
     return bgh_insert_table(ssns->active, key, data);
 }
 
+static inline void _move_tables(
+        bgh_tbl_t *active, bgh_tbl_t *standby, bgh_key_t *key, bgh_row_t *row) {
+    bgh_insert_table(standby, key, row->data);
+    active->inserted--;
+    row->data = NULL;
+    row->deleted = true; // this is necessary to handle the case where there 
+                         // was a previous collision with this row
+}
+
 void *_draining_lookup_active(
         bgh_tbl_t *active, bgh_tbl_t *standby, bgh_key_t *key) {
-    void *data = NULL;
-
-    // Check the old (active) hash first
-    // If found, move to the standby hash
-    int64_t idx = _lookup(active, key);
-    if(idx >= 0) {
-        // Found idx in standby hash. If there's data there, move to 
-        // standby hash
-        data = active->rows[idx]->data;
-
-        if(data) {
-            // Found something, Move it to standby hash
-            active->rows[idx]->data = NULL;
-            active->rows[idx]->deleted = true; // this is necessary to handle the case where there was a previous collision
-            active->inserted--;
-            bgh_insert_table(standby, key, data);
-            return data;
-        }
+    bgh_row_t *row = _lookup_row(active, key);
+    if(!row || !row->data) {
+        row = _lookup_row(standby, key);
+        if(row) 
+            return row->data;
+        return NULL;
     }
 
-    // No valid idx or null entry
-    // Check the standby table in case it has already moved over
-    int64_t idx2 = _lookup(standby, key);
-    if(idx2 < 0)
-        return NULL;
-
-    return standby->rows[idx2]->data;
+    void *data = row->data;
+    _move_tables(active, standby, key, row);
+    return data;
 }
 
 void *_draining_prefer_standby(
         bgh_tbl_t *active, bgh_tbl_t *standby, bgh_key_t *key) {
-    void *data = NULL;
-
-    // Check the on-deck (standby) table first
-    int64_t idx = _lookup(standby, key);
-
-    if(idx >= 0) {
-        data = standby->rows[idx]->data;
-        if(data) {
-            // Found the data right where it should be
-            return data;
-        }
+    bgh_row_t *row = _lookup_row(standby, key);
+    if(row && row->data) {
+        return row->data;
     }
 
-    idx = _lookup(active, key);
+    row = _lookup_row(active, key);
+    if(!row || !row->data)
+        return NULL;
 
-    if(idx >= 0) {
-        // Found idx in standby hash. If there's data there, move to 
-        // standby hash
-        data = active->rows[idx]->data;
-
-        if(data) {
-            active->rows[idx]->data = NULL;
-            active->rows[idx]->deleted = true; // this is necessary to handle the case where there was a previous collision
-            active->inserted--;
-            bgh_insert_table(standby, key, data);
-            return data;
-        }
-    }
-    return NULL;
+    void *data = row->data;
+    _move_tables(active, standby, key, row);
+    return data;
 }
 
 void *bgh_lookup(bgh_t *ssns, bgh_key_t *key) {
-    int64_t idx = -1;
     void *data = NULL;
 
     pthread_mutex_lock(&ssns->lock);
@@ -388,16 +432,14 @@ void *bgh_lookup(bgh_t *ssns, bgh_key_t *key) {
     } 
     pthread_mutex_unlock(&ssns->lock);
         
-    idx = _lookup(ssns->active, key);
-
-    if(idx < 0)
-        return NULL;
-
-    return ssns->active->rows[idx]->data;
+    bgh_row_t *row = _lookup_row(ssns->active, key);
+    if(row)
+        return row->data;
+    return NULL;
 }
 
 void bgh_delete_from_table(bgh_tbl_t *table, bgh_key_t *key) {
-    int64_t idx = _lookup(table, key);
+    int64_t idx = _lookup_idx(table, key);
     if(idx < 0)
         return; // Should never happen
 

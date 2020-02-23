@@ -15,11 +15,16 @@ void *_draining_lookup_active(
 void *_draining_prefer_standby(
         bgh_tbl_t *active, bgh_tbl_t *standby, bgh_key_t *key);
 bgh_stat_t bgh_insert_table(bgh_tbl_t *tbl, bgh_key_t *key, void *data);
-int64_t _lookup(bgh_tbl_t *table, bgh_key_t *key);
+int64_t _lookup_idx(bgh_tbl_t *table, bgh_key_t *key);
 bgh_tbl_t 
     *bgh_new_tbl(uint64_t rows, uint64_t max_inserts, void (*free_cb)(void *));
-};
 
+int prime_total();
+uint64_t prime_at_idx(int idx);
+int prime_nearest_idx(uint64_t val);
+uint64_t prime_larger_idx(int idx);
+uint64_t prime_smaller_idx(int idx);
+}
 void free_cb(void *p) {
     free(p);
 }
@@ -31,14 +36,14 @@ void assert_eq(void *p, const char *s) {
 }
 
 void assert_lookup_eq(bgh_tbl_t *t, bgh_key_t *key, const char *val) {
-    int64_t idx = _lookup(t, key);
+    int64_t idx = _lookup_idx(t, key);
 
     assert(idx >= 0);
     assert_eq(t->rows[idx]->data, val);
 }
 
 void assert_lookup_clear(bgh_tbl_t *t, bgh_key_t *key) {
-    int64_t idx = _lookup(t, key);
+    int64_t idx = _lookup_idx(t, key);
     assert(idx < 0 || !t->rows[idx]->data);
 }
 
@@ -46,9 +51,27 @@ void assert_refresh_within(bgh_t *b, int seconds) {
     time_t start = time(NULL);
 
     while(!b->refreshing) {
-        usleep(10000);
         assert(time(NULL) - start <= seconds);
     }
+}
+
+void primes_test() {
+    printf("%s\n", __func__);
+
+    assert(prime_nearest_idx(0) == 0);
+    assert(prime_nearest_idx(50046) == 0);
+    assert(prime_nearest_idx(50047) == 0);
+    // Rounds up
+    assert(prime_nearest_idx(50048) == 1);
+    assert(prime_nearest_idx(100002) == 1);
+    assert(prime_nearest_idx(100004) == 2);
+    assert(prime_nearest_idx(15485783) == 30);
+    assert(prime_nearest_idx(16000000) == 30);
+
+    assert(prime_smaller_idx(0) == 50047);
+    assert(prime_smaller_idx(1) == 50047);
+    assert(prime_larger_idx(1) == 200003);
+    assert(prime_larger_idx(30) == 15485783);
 }
 
 void basic() {
@@ -65,8 +88,12 @@ void basic() {
     // Bzero'ing to clean up pad bytes. Needed to prevent valgrind from complaining
     bzero(&key, sizeof(key)); 
 
-    // (ip, ip, port, port, vlan)
-    key = { 10, 200, 3000, 4000, 5};
+    key.sip = 10;
+    key.dip = 200;
+    key.sport = 3000;
+    key.dport = 5000;
+    key.vlan = 5;
+
     // Add three (changing source IP)
     bgh_insert(tracker, &key, strdup("foo"));
     key.sip = 20;
@@ -88,7 +115,12 @@ void basic() {
     assert_eq(bgh_lookup(tracker, &key), "baz");
 
     // Swap source and IP, should get same session data
-    bgh_key_t key2 = { 200, 30, 4000, 3000, 5};
+    bgh_key_t key2;
+    key2.dip = 30;
+    key2.sip = 200;
+    key2.dport = 3000;
+    key2.sport = 5000;
+    key2.vlan = 5;
 
     assert_eq(bgh_lookup(tracker, &key2), "baz");
 
@@ -195,7 +227,7 @@ void linear_probing() {
 
     bgh_config_t conf;
     bgh_config_init(&conf);
-    conf.starting_rows = 11;
+    conf.starting_rows = 13;
     conf.hash_full_pct = 100;
     conf.refresh_period = 0;
 
@@ -205,23 +237,28 @@ void linear_probing() {
     bzero(&key1, sizeof(key1)); 
     bzero(&key2, sizeof(key2)); 
 
-    // (ip, ip, port, port, vlan)
-    key1 = { 10, 200, 3000, 4000, 5};
+    key1.sip = 10;
+    key1.dip = 200;
+    key1.sport = 3000;
+    key1.dport = 4000; 
     // Same IPs, but diff ports, but def a hash collision
-    key2 = { 10, 200, 4000, 3000, 5};
+    key2.sip = 10;
+    key2.dip = 200;
+    key2.sport = 4000;
+    key2.dport = 3000; 
 
     bgh_insert(tracker, &key1, (char*)"foo1");
     bgh_insert(tracker, &key2, (char*)"foo2");
 
-    int64_t idx1 = _lookup(tracker->active, &key1);
-    int64_t idx2 = _lookup(tracker->active, &key2);
+    int64_t idx1 = _lookup_idx(tracker->active, &key1);
+    int64_t idx2 = _lookup_idx(tracker->active, &key2);
 
     assert(idx1 == idx2-1);
 
     // Clear the first one. When we do the next lookup on the collided row, it
     // will adjust back by one
     bgh_clear(tracker, &key1);
-    idx2 = _lookup(tracker->active, &key2);
+    idx2 = _lookup_idx(tracker->active, &key2);
     assert(idx1 == idx2);
 
     bgh_free(tracker);
@@ -250,7 +287,7 @@ struct key_cmp {
 void bench() {
     printf("%s\n", __func__);
 
-    bgh_t *tracker = bgh_new(free_cb);
+    bgh_t *tracker = bgh_new(nop_free_cb);
     bgh_key_t keys[NUM_ITS];
     memset(&keys, 0, sizeof(keys));
 
@@ -271,7 +308,7 @@ void bench() {
     uint64_t now = 1000000 * tv.tv_sec + tv.tv_usec;
 
     for(int i=0; i<NUM_ITS; i++) {
-        bgh_insert(tracker, &keys[i], strdup("foo"));
+        bgh_insert(tracker, &keys[i], (char*)"foo");
     }
 
     assert(tracker->active->collisions < 10);
@@ -297,7 +334,7 @@ void bench() {
     now = 1000000 * tv.tv_sec + tv.tv_usec;
 
     for(int i=0; i<NUM_ITS; i++) {
-        tree[keys[i]] = strdup("foo");
+        tree[keys[i]] = (char*)"foo";
     }
 
     for(int i=0; i<NUM_ITS*100; i++) {
@@ -307,7 +344,6 @@ void bench() {
 
     for(int i=0; i<NUM_ITS; i++) {
         auto it = tree.find(keys[i]);
-        free(it->second);
         tree.erase(keys[i]);
     }
 
@@ -321,11 +357,13 @@ void time_draining() {
 
     bgh_config_t conf;
     bgh_config_init(&conf);
+    conf.starting_rows = 10000141;
     conf.timeout = 2;
     conf.refresh_period = 7;
 
     bgh_t *tracker = bgh_config_new(&conf, nop_free_cb);
 
+    assert(tracker->active->num_rows == 10000141);
     bgh_key_t key;
     // Bzero'ing to clean up pad bytes and prevent valgrind from complaining
     bzero(&key, sizeof(key)); 
@@ -348,7 +386,8 @@ void time_draining() {
 
     // First, insert for refresh_period/2
     while(time(NULL) - start < conf.refresh_period/2 - 1) {
-        assert(bgh_insert(tracker, &keys[total % NUM_ITS], (void*)"nodelete") != BGH_FULL);
+        assert(bgh_insert(tracker, &keys[total % NUM_ITS], (void*)"nodelete")
+             != BGH_FULL);
         total++;
     }
     printf("%u inserts\n", total);
@@ -442,21 +481,54 @@ void drain() {
 
 void resize() {
     printf("%s\n", __func__);
-}
 
-void resize_to_bounds() {
-    printf("%s\n", __func__);
+    bgh_config_t conf;
+    bgh_config_init(&conf);
+    conf.starting_rows = 100003;
+    conf.refresh_period = 2;
+    conf.timeout = 1;
+
+    bgh_t *tracker = bgh_config_new(&conf, nop_free_cb);
+
+    int nkeys = conf.starting_rows / 4;
+    bgh_key_t keys[nkeys];
+    memset(&keys, 0, sizeof(keys));
+
+    bgh_key_t key;
+    // Bzero'ing to clean up pad bytes and prevent valgrind from complaining
+    bzero(&key, sizeof(key)); 
+
+    for(int i=0; i<nkeys; i++) {
+        key.dip = rand();
+        key.sip = rand();
+        key.sport = (uint16_t)rand();
+        key.dport = (uint16_t)rand();
+        keys[i] = key;
+    }
+
+    assert(tracker->active->num_rows == 100003);
+    for(int i=0; i<nkeys; i++) 
+        bgh_insert(tracker, &keys[i], (char*)"foo");
+
+    sleep(4);
+    assert(tracker->active->num_rows == 200003);
+    sleep(4);
+    assert(tracker->active->num_rows <= 100003);
+
+    bgh_free(tracker);
 }
 
 int main(int argc, char **argv) {
     // Make rand repeatable
     srand(1);
 
+    #warning need test for clearing row while refreshing tables
+
     basic();
     linear_probing();
+    primes_test();
     drain();
     resize();
-    resize_to_bounds();
     time_draining();
     timeouts();
     bench();

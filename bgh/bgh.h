@@ -12,7 +12,6 @@
 #include <sys/types.h>
 #include <stdbool.h>
 #include <time.h>
-#include "primes.h"
 
 #define BGH_DEFAULT_TIMEOUT 60 // seconds
 #define BGH_DEFAULT_REFRESH_PERIOD 120 // seconds
@@ -34,12 +33,28 @@ typedef struct _bgh_config_t {
              max_rows;
     uint32_t timeout, // Seconds
              refresh_period; // Seconds
-    float hash_full_pct;
+    float hash_full_pct,
+          scale_up_pct,
+          scale_down_pct;
 } bgh_config_t;
 
+#if 0
 typedef struct _bgh_key_t {
     uint32_t sip, dip;
     uint16_t sport, dport;
+    uint8_t vlan;
+} bgh_key_t;
+#endif
+
+typedef struct _bgh_key_t {
+    // Ports are intentionally kept as uint32_ts as an optimization in the key
+    // comparison function
+    uint32_t sip;
+    uint32_t sport;
+
+    uint32_t dip;
+    uint32_t dport;
+
     uint8_t vlan;
 } bgh_key_t;
 
@@ -60,7 +75,6 @@ typedef struct _bgh_tbl_t {
     uint64_t inserted, 
              collisions,
              max_inserts;
-
     uint64_t num_rows;
     bgh_row_t **rows;
 } bgh_tbl_t;

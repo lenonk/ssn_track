@@ -10,12 +10,12 @@ BGH derives its implementation from connection draining blue-green deployments.
 It uses two threads, one of which controls a periodic refresh. During a 
 refresh:
 
-    - A new hash is allocated and optionally resized based on past resource
-      requirements 
+    - A new hash is allocated and is optionally sized to meet past resource 
+      requirements
     - When a lookup is performed and the data is found in the old table, it is
       automatically transitioned to the new table
     - All inserts go into the new table
-    - The old hash is destroyed after the timeout period. Any sessions 
+    - After the timeout period, the old hash is destroyed. Any sessions 
       remaining in this hash are removed
 
 Since hash reallocation and cleanup are performed in their own thread, the 
