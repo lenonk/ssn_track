@@ -9,7 +9,6 @@
 #include <string.h>
 #include <stdio.h>
 #include <assert.h>
-#include <openssl/md5.h>
 #include <pthread.h>
 #include <unistd.h>
 #include "bgh.h"
@@ -213,21 +212,9 @@ static inline int key_eq(bgh_key_t *k1, bgh_key_t *k2) {
 // Hash func: XOR32
 // Reference: https://www.researchgate.net/publication/281571413_COMPARISON_OF_HASH_STRATEGIES_FOR_FLOW-BASED_LOAD_BALANCING
 static inline uint64_t hash_func(uint64_t mask, bgh_key_t *key) {
-#if 1
     uint64_t h = ((uint64_t)(key->sip + key->dip) ^
                             (key->sport + key->dport));
     h *= 1 + key->vlan;
-#else
-    // XXX Gave similar distribution performance to the above
-    MD5_CTX c;
-    MD5_Init(&c);
-    MD5_Update(&c, key, sizeof(*key));
-    unsigned char digest[16];
-    MD5_Final(digest, &c);
-    
-    uint64_t h = *(uint64_t*)digest;
-    debug("HASH: %llu -> %ld", h, h % mask); 
-#endif
     return h % mask;
 }
 

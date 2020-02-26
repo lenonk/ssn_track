@@ -34,10 +34,13 @@ typedef struct _dsh_key_t {
     uint8_t vlan;
 } dsh_key_t;
 
+struct dsh_lru_t;
 typedef struct _dsh_lru_node_t {
     struct _dsh_lru_node_t *prev, *next;
     uint64_t idx;
     uint32_t last;
+   
+    dsh_lru_t *row;
 } dsh_lru_node_t;
 
 typedef struct _dsh_lru_t {
@@ -48,7 +51,9 @@ typedef struct _dsh_row_t {
     void *data;
     dsh_key_t key;
     dsh_lru_node_t *to_node;
-    bool deleted;
+    
+    // For collisions
+    struct _dsh_row_t *next;
 } dsh_row_t;
 
 typedef struct _dsh_config_t {
@@ -84,11 +89,10 @@ extern "C" {
 dsh_t *dsh_new_defaults(void (*free_cb)(void *));
 dsh_t *dsh_new(uint32_t rows, uint32_t timeout_seconds, void (*free_cb)(void *));
 // Needs test case
-// dsh_t *dsh_resize(dsh_t *existing, uint32_t new_size);
 void dsh_free(dsh_t *);
 void *dsh_lookup(dsh_t *tracker, dsh_key_t *key);
 dsh_stat_t dsh_insert(dsh_t *tracker, dsh_key_t *key, void *data);
-void dsh_delete(dsh_t *tracker, dsh_key_t *key);
+void dsh_clear(dsh_t *tracker, dsh_key_t *key);
 void dsh_timeout_old(dsh_t *table, int max_age); // Call to timeout old nodes manually
 
 extern dsh_config_t dsh_config;

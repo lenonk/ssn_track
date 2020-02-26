@@ -8,7 +8,6 @@
 #include <string.h>
 #include <stdio.h>
 #include <assert.h>
-#include <openssl/md5.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include "dsh.h"
@@ -86,8 +85,9 @@ dsh_row_t *dsh_new_row() {
     dsh_row_t *row = (dsh_row_t*)calloc(sizeof(dsh_row_t), 1);
     if(!row)
         return NULL;
-    row->to_node = dsh_lru_new_node(0);
-    row->deleted = false;
+    row->to_node = dsh_lru_new_node();
+    row->to_node->row = row;
+    row->next = NULL;
     return row;
 };
 
@@ -113,6 +113,8 @@ dsh_t *dsh_new(uint32_t rows, uint32_t timeout_seconds, void (*free_cb)(void *))
 
     table->timeouts = (dsh_lru_t*)calloc(sizeof(dsh_lru_t), 1);
     if(!table->timeouts) {
+        for(int i=0; i<table->num_rows; i++)
+            free(table->rows[i]);
         free(table->rows);
         free(table);
         return NULL;
@@ -129,6 +131,7 @@ void dsh_free(dsh_t *table) {
     for(dsh_lru_node_t *node = table->timeouts->head; node; node = node->next) {
         // debug("%s: Deleting TO node %p idx %d", __func__, node, node->idx);
         table->free_cb(table->rows[node->idx]->data);
+if ->next, delete each
     }
 
     free(table->timeouts);
@@ -140,6 +143,41 @@ void dsh_free(dsh_t *table) {
 
     free(table->rows);
     free(table);
+}
+
+#if 0
+void _clear_collision(dsh_row_t *top, dsh_row_t *row) {
+    // Search the list for it
+    dsh_row_t *cr = top;
+              *crn = top->next;
+    while(crn != row) {
+        cr = cr->next;
+        crn = crn->next;
+    }
+    assert(cr);
+    assert(crn);
+    cr->next = crn->next; // Unlink from collision list
+    crn->free_cb(crn->data); // Free user data
+    free(crn);
+}
+#endif
+
+void _clear_collision(dsh_row_t *row, dsh_key_t *key) {
+    // Search the list for it
+    dsh_row_t *cr = top;
+              *crn = top->next;
+    while(!key_eq(crn->key, key)) {
+        cr = cr->next;
+        crn = crn->next;
+    }
+    assert(cr);
+    assert(crn);
+    cr->next = crn->next; // Unlink from collision list
+    crn->free_cb(crn->data); // Free user data
+
+    if(crn->to_node->prev)
+        crn->to_node->prev->next = crn->to_node->next;
+    free(crn);
 }
 
 void dsh_timeout_old(dsh_t *table, int max_age) {
@@ -158,24 +196,33 @@ void dsh_timeout_old(dsh_t *table, int max_age) {
             break;
         }
 
+        table->free_cb(current->row->data);
+
         debug("Timing out node %p for idx %d: %d >= %d", 
             current, current->idx, now - current->last, max_age);
 
         dsh_row_t *row = table->rows[current->idx];
 
-        if(dsh_config.log_level <= DSH_DEBUG)
-            assert(row->data);
+        // In case of collision, row won't equal current->row
+        // Need to specifically free that timeout node and this collided entry
+        if(row != current->row) {
+            _clear_collision(row, current->row->key);
+            table->stats.collisions--;
+
+            if(current->prev)
+                current->prev->next = NULL;
+            dsh_lru_node_t *tmp = current;
+            current = current->prev;
+            free(tmp);
+        }
+        else {
+            row->data = NULL;
+            current = current->prev;
+            dsh_lru_node_init(row->to_node);
+        }
 
         table->stats.inserted--;
         table->stats.timeouts++;
-        table->free_cb(row->data);
-        row->data = NULL;
-        row->deleted = true;
-
-        current = current->prev;
-
-        // NOTE: this changes the pointers in the node hence changing current above
-        dsh_lru_node_init(row->to_node);
     
         if(!current) 
             // Walked entire list
@@ -185,11 +232,10 @@ void dsh_timeout_old(dsh_t *table, int max_age) {
     dsh_debug_struct(table);
 }
 
-void dsh_timeout_update(dsh_t *table, dsh_row_t *row, uint64_t idx) {
+// Insert this row's timeout node into the timeouts LRU
+void dsh_timeout_update(dsh_t *table, dsh_row_t *row) {
     dsh_lru_t *timeouts = table->timeouts;
-    dsh_lru_node_t *node;
-
-    node = row->to_node;
+    dsh_lru_node_t *node = row->to_node;
 
     if(node != timeouts->head) {
         if(node->prev) {
@@ -271,7 +317,7 @@ static inline uint64_t hash_func(uint64_t mask, dsh_key_t *key) {
     return h % mask;
 }
 
-static int64_t _lookup(dsh_t *table, dsh_key_t *key) {
+static dsh_row_t *_lookup_row(dsh_t *table, dsh_key_t *key) {
     int64_t idx = hash_func(table->num_rows, key);
     dsh_row_t *row = table->rows[idx];
 
@@ -279,42 +325,35 @@ static int64_t _lookup(dsh_t *table, dsh_key_t *key) {
     // We'll check later
     // The check for "deleted" is to deal with the case where there was 
     // previously a collision
-    if((!row->data && !row->deleted) || key_eq(key, &row->key))
-        return idx;
+    if(!row->data || key_eq(key, &row->key))
+        return row;
 
-    // There was a collision. Use linear probing
-    //  NOTE: 
-    //  - while draining or on _clear, we set data to null
-    //  - if there had been a collision, we still need to be able to reach the
-    //    collided node
-    //  - "deleted" is used to handle that case
-
-    uint64_t collisions = 0;
-    uint64_t start = idx++;
-    while(idx != start) {
-        collisions++;
-
-        if(idx >= table->num_rows)
-            idx = 0;
-
-        dsh_row_t *row = table->rows[idx];
-
+    for(row = row->next; row; row = row->next) {
         if(key_eq(key, &row->key)) {
-            // Intentionally ignoring the collision count here. Otherwise, we 
-            // wind up counting extra collisions every time we look up this row
-            return idx;
+            return row;
         }
-
-        if(!row->data && !row->deleted) {
-            table->stats.collisions += collisions;
-            return idx;
-        }
-
-        idx++;
     }
 
-    table->stats.collisions += collisions;
-    return -1;
+    return NULL;
+}
+
+// Returns the collided row, or allocates
+// If it allocates a new one, it's inserted at the top of the list
+dsh_row_t *_insert_collision(dsh_row_t *first, dsh_key_t *key) {
+    for(row = first->next; row; row = row->next) {
+        if(key_eq(key, &row->key)) {
+            return row;
+        }
+    }
+
+    // No row found. Allocate new and insert at front of collision list
+
+    dsh_row_t *nr = dsh_new_row();
+    dsh_row_t *tmp = first->next;
+    first->next = nr;
+    nr->next = tmp;
+
+    return nr;
 }
 
 dsh_stat_t dsh_insert(dsh_t *table, dsh_key_t *key, void *data) {
@@ -328,23 +367,29 @@ dsh_stat_t dsh_insert(dsh_t *table, dsh_key_t *key, void *data) {
     if(table->stats.inserted * 8 > table->num_rows)
         return DSH_FULL;
 
-    int64_t idx = _lookup(table, key);
-    if(idx < 0)
-        return DSH_EXCEPTION;
-
+    int64_t idx = hash_func(table->num_rows, key);
     dsh_row_t *row = table->rows[idx];
 
-    if(row->data)
-        table->free_cb(row->data);
-    else
+    if(row->data) {
+        if(key_eq(key, &row->key)) {
+            // Inserted over existing key. Free old data
+            table->free_cb(row->data);
+        else
+            // Walk collision list, if present
+            // allocate new node if necessary
+            row = _insert_collision(row, key);
+            table->stats.inserted++;
+        } 
+    }
+    else {
         table->stats.inserted++;
+    }
 
+    row->to_node->idx = idx;
     memcpy(&row->key, key, sizeof(row->key));
     row->data = data;
-    row->deleted = false;
-    row->to_node->idx = idx;
 
-    dsh_timeout_update(table, row, idx);
+    dsh_timeout_update(table, row);
 
     return DSH_OK;
 }
@@ -357,6 +402,8 @@ void *dsh_lookup(dsh_t *table, dsh_key_t *key) {
 
     dsh_timeout_old(table, table->timeout);
 
+FIX
+
     dsh_row_t *row = table->rows[idx];
 
     if(!row->data)
@@ -367,15 +414,19 @@ void *dsh_lookup(dsh_t *table, dsh_key_t *key) {
     return row->data;
 }
 
-void dsh_delete(dsh_t *table, dsh_key_t *key) {
-    int64_t idx = _lookup(table, key);
-    if(idx < 0)
-        return; // Should never happen
-
+void dsh_clear(dsh_t *table, dsh_key_t *key) {
+    int64_t idx = hash_func(table->num_rows, key);
     dsh_row_t *row = table->rows[idx];
-
-    if(!row->data) 
+    if(!row->data)
         return;
+
+    // Collision
+    if(!key_eq(key, &row->key)) {
+        _clear_collision(row, key);
+        dsh_lru_node_t *to = row->to_node;
+        to->prev = to->next;
+        free(tmp); // Remove this timeout node
+    }
 
     _dsh_timeout_remove(table->timeouts, row->to_node);
 
