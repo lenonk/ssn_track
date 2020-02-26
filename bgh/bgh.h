@@ -38,14 +38,6 @@ typedef struct _bgh_config_t {
           scale_down_pct;
 } bgh_config_t;
 
-#if 0
-typedef struct _bgh_key_t {
-    uint32_t sip, dip;
-    uint16_t sport, dport;
-    uint8_t vlan;
-} bgh_key_t;
-#endif
-
 typedef struct _bgh_key_t {
     // Ports are intentionally kept as uint32_ts as an optimization in the key
     // comparison function

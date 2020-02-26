@@ -1,11 +1,10 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <version.h>
 #include <pcap.h>
 #include <arpa/inet.h>
 
-#include "ssn_track.h"
+#include "bgh.h"
 
 // Our sample session data
 struct ssn_data_t {
@@ -52,13 +51,13 @@ struct tcph_t {
 };
 
 void usage() {
-    printf("ssn_track sample\nUsing lib version %d.%d\n", ssn_track_VERSION_MAJOR, ssn_track_VERSION_MINOR);
+//    printf("ssn_track sample\nUsing lib version %d.%d\n", ssn_track_VERSION_MAJOR, ssn_track_VERSION_MINOR);
     puts("Usage: ./pcap_stats <pcap>");
 }
 
 void pcap_cb(uint8_t *args, const struct pcap_pkthdr *header, const uint8_t *packet)
 {
-    dsh_t *tracker = (dsh_t*)args;
+    bgh_t *tracker = (bgh_t*)args;
 
     iph_t *ip = (iph_t*)(packet + SIZE_ETHERNET);
 
@@ -91,8 +90,15 @@ void pcap_cb(uint8_t *args, const struct pcap_pkthdr *header, const uint8_t *pac
     }
     */
 
-    dsh_key_t key = { ip->ip_src.s_addr, ip->ip_dst.s_addr, tcp->th_sport, tcp->th_dport, 0 };
-    ssn_data_t *ssn = (ssn_data_t*)dsh_lookup(tracker, &key);
+    bgh_key_t key;
+
+    key.sip = ip->ip_src.s_addr;
+    key.dip = ip->ip_dst.s_addr;
+    key.sport = tcp->th_sport;
+    key.dport = tcp->th_dport;
+    key.vlan = 0;
+
+    ssn_data_t *ssn = (ssn_data_t*)bgh_lookup(tracker, &key);
 
     if(!ssn) {
         // New session
@@ -102,8 +108,8 @@ void pcap_cb(uint8_t *args, const struct pcap_pkthdr *header, const uint8_t *pac
 
         ssn = new ssn_data_t;
         ssn->count = 0;
-        dsh_stat_t stat = dsh_insert(tracker, &key, ssn);
-        if(stat != DSH_OK) {
+        bgh_stat_t stat = bgh_insert(tracker, &key, ssn);
+        if(stat != BGH_OK) {
             printf("Failed to save session: %d\n", stat);
             exit(-1);
         }
@@ -124,7 +130,7 @@ int main(int argc, char **argv) {
         return -1;
     }
 
-    dsh_t *tracker = dsh_new(DSH_DEFAULT_NUM_ROWS, DSH_DEFAULT_TIMEOUT, free_data_cb);
+    bgh_t *tracker = bgh_new(free_data_cb);
 
     char errbuf[PCAP_ERRBUF_SIZE];
     pcap_t *ph;
@@ -136,7 +142,7 @@ int main(int argc, char **argv) {
  
     pcap_loop(ph, 0, pcap_cb, (u_char*)tracker);
 
-    dsh_free(tracker);
+    bgh_free(tracker);
 
     pcap_close(ph);
 }

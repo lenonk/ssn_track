@@ -9,7 +9,6 @@
 #include <string.h>
 #include <stdio.h>
 #include <assert.h>
-#include <openssl/md5.h>
 #include <pthread.h>
 #include <unistd.h>
 #include "bgh.h"

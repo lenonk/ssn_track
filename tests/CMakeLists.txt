@@ -1,11 +1,5 @@
 cmake_minimum_required(VERSION 3.0)
 
-add_executable(test_dsh test_dsh.cc)
-
-include_directories(test_dsh ${PROJECT_SOURCE_DIR} ${PROJECT_BINARY_DIR})
-link_directories(test_dsh ${PROJECT_SOURCE_DIR})
-target_link_libraries(test_dsh dsh)
-
 add_executable(test_bgh test_bgh.cc)
 
 include_directories(test_bgh ${PROJECT_SOURCE_DIR} ${PROJECT_BINARY_DIR})

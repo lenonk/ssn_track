@@ -1,33 +1,21 @@
 
-Blue Green Hash (bgh) and Dirt Simple Hash (dsh) are two solutions for 
-TCP/IP session tracking. Each allows arbitrary data to be associated with
-a session. To account for missed teardowns, session data is automatically
-timed out. 
+Blue Green Hash (bgh) is a solution for TCP/IP session tracking. Arbitrary data 
+can be associated with a session and old sessions are automatically timedout.
 
-# BGH
-
-BGH derives its implementation from connection draining blue-green deployments.
-It uses two threads, one of which controls a periodic refresh. During a 
+The implementation is inspired by connection draining blue-green deployments.
+BGH uses two threads, one of which controls a periodic refresh. During a 
 refresh:
 
     * A new hash is allocated and is optionally sized to meet past resource 
       requirements
-    * When a lookup is performed and the data is found in the old table, it is
+    * When a lookup is performed, and the data is found in the old table, it is
       automatically transitioned to the new table
     * All inserts go into the new table
     * After the timeout period, the old hash is destroyed. Any sessions 
       remaining in this hash are removed
 
 Since hash reallocation and cleanup are performed in their own thread, and 
-timeouts are performed on coarse blocks, the performance impact is minimal.
-
-# DSH
-
-DSH maintains an LRU of sessions that is updated for each lookup and insert. 
-Old sessions are timed out once the timeout limit is hit, unlike BGH where 
-timeouts happen after the refresh period starts and the timeout is reached.
-
-DSH does not automatically resize.
+timeouts are performed on coarse blocks, the performance impact is negligible.
 
 Used by https://github.com/ajkeeton/pack_stat for TCP session stats
 
@@ -35,7 +23,7 @@ Used by https://github.com/ajkeeton/pack_stat for TCP session stats
 
     mkdir build ; cd build ; cmake .. ; make
     
-# Basic usage (prefix dsh for Dirt Simple Hash):
+# Basic usage
 
     bgh_new(...)
     bgh_insert(...)
@@ -65,13 +53,11 @@ Initialize a config to the defaults:
     bgh_config_t config;
     bgh_init_config(&config);
 
-Configuration options are as follows:
-
-    // Seconds between refresh periods. 0 to disable refreshes (and thereby
-    //  timeouts)
+    // Seconds between refresh periods. 0 to disable refreshes and therefore 
+    // also timeouts. Refreshes are necessary to properly clean up the table.
     config.refresh_period = 120; 
-    // Seconds to wait for active sessions to transition. Anything left in the
-    // old hash after this timeout will be removed
+    // Seconds to wait during the refresh period for active sessions to 
+    // transition. Anything left in the old hash after this timeout will be removed
     config.timeout = 30;
     // Initial number of rows. Should be prime
     config.initial_rows = 100003;
@@ -81,20 +67,34 @@ Configuration options are as follows:
     // Max number of rows we can grow to
     // Should be prime
     config.max_rows = 15485867;
-
+    // Inserts are ignored if the hash reaches this percentage full
+    // It will be scaled up with the next refresh (if configured to do so)
+    config.hash_full_pct = 8;
+    // If the hash reaches this percent of inserts, it will be scaled up
+    config.scale_up_pct = 5;
+    // At this percentage, the hash will be scaled down
+    config.scale_down_pct = 0.05;
+    
     bgh_t *tracker = bgh_config_new(&config, free_cb);
 
 # BGH Autoscaling
 
-prime.cc contains a partial list of prime numbers. When scaling up or down, BGH
-selects the next prime in the list in the direction of scaling.
+The number of inserts is tracked. If it reaches the scale_up_pct or 
+scale_down_pct, the hash will be resized during the new refresh period.
 
+Note, prime.cc contains a partial list of prime numbers. When scaling up or 
+down, BGH selects the next prime in the list in the direction of scaling.
 
-Test:
+# Tests
 
-    ./tests/test
+To test, run:
 
-And for extra Sanity:
+    ./tests/test_bgh
 
-    valgrind --tool=memcheck tests/test
+# Benchmarks
+
+On my Macbook, the total time for 8192 inserts, deletes, and 819200 lookups:
+
+    - BGH: 40.855999 ms
+    - STL map: 337.914001 ms
 
