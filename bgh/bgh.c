@@ -81,21 +81,26 @@ bgh_tbl_t *bgh_new_tbl(uint64_t rows, uint64_t max_inserts, void (*free_cb)(void
     return tbl;
 }
 
-uint64_t _update_size(bgh_config_t *config, int idx, bgh_tbl_t *tbl) {
+uint64_t _update_size(bgh_config_t *config, int *idx, bgh_tbl_t *tbl) {
     // TODO: incorporate a timeout
+
+    // printf("Sizing: %lu > %f ? Max inserts: %lu\n", 
+    //       tbl->inserted, tbl->num_rows * config->scale_up_pct/100.0, tbl->max_inserts);
 
     uint64_t next = 0;
     if(config->scale_up_pct > 0 && (tbl->inserted > tbl->num_rows * config->scale_up_pct/100.0)) {
-        next = prime_larger_idx(idx);
+        next = prime_larger_idx(*idx);
         if(next > config->max_rows)
             return config->max_rows;
+        (*idx)++;
         return next;
     }
 
     if(tbl->inserted < tbl->num_rows * config->scale_down_pct/100.0) {
-        next = prime_smaller_idx(idx);
+        next = prime_smaller_idx(*idx);
         if(next < config->min_rows)
             return config->min_rows;
+        (*idx)--;
         return next;
     }
 
@@ -119,10 +124,8 @@ static void *refresh_thread(void *ctx) {
             continue;
         }
 
-        last = now;
-
         // Calc new hash size
-        uint64_t nrows = _update_size(&ssns->config, pindex, ssns->active);
+        uint64_t nrows = _update_size(&ssns->config, &pindex, ssns->active);
         uint64_t max_inserts = nrows * ssns->config.hash_full_pct/100.0;
 
         // Create new hash
@@ -131,6 +134,7 @@ static void *refresh_thread(void *ctx) {
         if(!ssns->standby) {
             // XXX Need way to handle/report this case gracefully
             // For now, just skip resize + timneout :/
+            abort();
             continue;
         }
 
@@ -155,6 +159,8 @@ static void *refresh_thread(void *ctx) {
 
         // Delete old table
         bgh_free_table(old_tbl);
+
+        last = now;
     }
 
     return NULL;
@@ -213,8 +219,8 @@ static inline int key_eq(bgh_key_t *k1, bgh_key_t *k2) {
 // Reference: https://www.researchgate.net/publication/281571413_COMPARISON_OF_HASH_STRATEGIES_FOR_FLOW-BASED_LOAD_BALANCING
 static inline uint64_t hash_func(uint64_t mask, bgh_key_t *key) {
 #if 1
-    uint64_t h = ((uint64_t)(key->sip + key->dip) ^
-                            (key->sport + key->dport));
+    uint64_t h = (uint64_t)(key->sip ^ key->dip) ^
+                  (uint64_t)(key->sport * key->dport);
     h *= 1 + key->vlan;
 #else
     // XXX Gave similar distribution performance to the above
@@ -225,7 +231,6 @@ static inline uint64_t hash_func(uint64_t mask, bgh_key_t *key) {
     MD5_Final(digest, &c);
     
     uint64_t h = *(uint64_t*)digest;
-    debug("HASH: %llu -> %ld", h, h % mask); 
 #endif
     return h % mask;
 }
@@ -268,6 +273,10 @@ int64_t _lookup_idx(bgh_tbl_t *table, bgh_key_t *key) {
     uint64_t start = idx++;
     while(idx != start) {
         collisions++;
+
+        //printf("%llu vs %llu\n", 
+        //        hash_func(table->num_rows, &table->rows[start]->key),
+        //        hash_func(table->num_rows, key));
 
         if(idx >= table->num_rows)
             idx = 0;
@@ -465,3 +474,14 @@ void bgh_clear(bgh_t *ssns, bgh_key_t *key) {
     pthread_mutex_unlock(&ssns->lock);
     bgh_delete_from_table(ssns->active, key);
 }
+
+void bgh_get_stats(bgh_t *ssns, bgh_stats_t *stats) {
+    pthread_mutex_lock(&ssns->lock);
+    stats->in_refresh = ssns->refreshing;
+    stats->num_rows = ssns->active->num_rows;
+    stats->inserted = ssns->active->inserted;
+    stats->collisions = ssns->active->collisions;
+    stats->max_inserts = ssns->active->max_inserts;
+    pthread_mutex_unlock(&ssns->lock);
+}
+

@@ -7,6 +7,7 @@
 #include <sys/time.h>
 #include <map>
 #include <list>
+#include <vector>
 #include "../bgh/bgh.h"
 
 extern "C" {
@@ -65,13 +66,14 @@ void primes_test() {
     assert(prime_nearest_idx(50048) == 1);
     assert(prime_nearest_idx(100002) == 1);
     assert(prime_nearest_idx(100004) == 2);
-    assert(prime_nearest_idx(15485783) == 30);
-    assert(prime_nearest_idx(16000000) == 30);
+    assert(prime_nearest_idx(15485783) == 26);
+    assert(prime_nearest_idx(16000000) == 26);
 
     assert(prime_smaller_idx(0) == 50047);
     assert(prime_smaller_idx(1) == 50047);
     assert(prime_larger_idx(1) == 200003);
-    assert(prime_larger_idx(30) == 15485783);
+
+    assert(prime_larger_idx(26) == 15485783);
 }
 
 void basic() {
@@ -390,7 +392,7 @@ void time_draining() {
              != BGH_FULL);
         total++;
     }
-    printf("%u inserts\n", total);
+    printf("%llu inserts\n", total);
 
     // Run for refresh_period - 1 and count number of lookup 
     total = 0;
@@ -399,7 +401,7 @@ void time_draining() {
         assert(bgh_lookup(tracker, &keys[total % NUM_ITS]));
         total++;
     }
-    printf("%u lookups \n", total);
+    printf("%llu lookups \n", total);
     total = 0;
     start = time(NULL);
 
@@ -413,7 +415,7 @@ void time_draining() {
         assert(bgh_insert(tracker, &keys[total % NUM_ITS], (void*)"nodelete") != BGH_FULL);
         total++;
     }
-    printf("%u inserts\n", total);
+    printf("%llu inserts\n", total);
 
     total = 0;
     start = time(NULL);
@@ -421,7 +423,7 @@ void time_draining() {
         assert(bgh_lookup(tracker, &keys[total % NUM_ITS]));
         total++;
     }
-    printf("%u lookups \n", total);
+    printf("%llu lookups \n", total);
 
     bgh_free(tracker);
 }
@@ -518,11 +520,112 @@ void resize() {
     bgh_free(tracker);
 }
 
+std::vector<bgh_key_t> keys;
+
+bgh_key_t gen_rand_key() {
+    bgh_key_t key;
+    bzero(&key, sizeof(key));  // for valgrind
+    key.sport = (uint16_t)rand();
+    key.dport = (uint16_t)rand();
+    key.sip = rand();
+    key.dip = rand();
+    return key;
+}
+
+bgh_key_t get_rand_key() {
+    return keys[rand() % keys.size()];
+}
+
+void stress() {
+    puts("Starting long-running stress test");
+
+    bgh_config_t conf;
+    bgh_config_init(&conf);
+    conf.starting_rows = 10000141;
+    conf.timeout = 4;
+    conf.refresh_period = 6;
+
+    bgh_t *tracker = bgh_config_new(&conf, free_cb);
+
+    for(int i=0; i<1024*512; i++) {
+        keys.push_back(gen_rand_key());
+    }
+
+    // Will arbitrarily restrict or grow the max number of sessions over time
+    int sessions_max = keys.size() / 2;
+
+    time_t last_out = 0,
+           last_state_change = 5,
+           start = time(NULL);
+    uint64_t failed_insert = 0;
+    while(1) {
+        bgh_key_t key;
+
+        time_t now = time(NULL);
+        if(now - last_out > 2) {
+            last_out = now;
+
+            bgh_stats_t stats;
+            bgh_get_stats(tracker, &stats);
+            // print stats
+            printf("\n%lu - Currently using %d keys\n", 
+                time(NULL), sessions_max);
+            printf("- inserted:       %llu\n", stats.inserted);
+            printf("- collisions:     %llu\n", stats.collisions);
+            printf("- table size:     %llu\n", stats.num_rows);
+            printf("- in refresh:     %s\n", stats.in_refresh ? "yes" : "no");
+            printf("- failed inserts: %llu\n", failed_insert);
+
+            failed_insert = 0;
+        }
+
+        if(now - last_state_change > 30) {
+            sessions_max = rand() % keys.size();
+            if(sessions_max < 100)
+                sessions_max = 100;
+            last_state_change = now;
+        }
+
+        // New session
+        if(!(rand() % 10)) {
+            key = get_rand_key();
+            void *d = strdup("data");
+            if(bgh_insert(tracker, &key, d) != BGH_OK) {
+                failed_insert++;
+                free(d);
+            }
+        }
+
+        // Lookup
+        if(!(rand() % 2)) {
+            key = keys[rand() % keys.size()];
+            bgh_lookup(tracker, &key);
+            // assert_eq(bgh_lookup(tracker, &key), "data");
+        }
+
+        // Clear
+        if(!(rand() % 20)) {
+            //key = get_rand_key();
+            //bgh_clear(tracker, &key);
+        }
+
+        // Replace a key. The old session will timeout
+        if(!(rand() % 20)) {
+            keys[rand() % sessions_max] = gen_rand_key();
+        }
+    }
+
+    bgh_free(tracker);
+}
+
 int main(int argc, char **argv) {
     // Make rand repeatable
     srand(1);
 
-    #warning need test for clearing row while refreshing tables
+    if(argc > 1 && !strcmp(argv[1], "-s")) {
+        stress();
+        return 0;
+    }
 
     basic();
     linear_probing();

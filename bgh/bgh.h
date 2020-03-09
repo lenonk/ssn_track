@@ -17,7 +17,7 @@
 #define BGH_DEFAULT_REFRESH_PERIOD 120 // seconds
 // When num_rows * hash_full_pct < number inserted, hash is considered 
 // full and we won't insert.
-#define BGH_DEFAULT_HASH_FULL_PCT 8.0 // 8 percent
+#define BGH_DEFAULT_HASH_FULL_PCT 6.0 // 6 percent
 
 typedef enum _bgh_stat_t {
     BGH_OK,
@@ -57,6 +57,14 @@ typedef struct _bgh_row_t {
     bool deleted; 
     bgh_key_t key;
 } bgh_row_t;
+
+typedef struct _bgh_stats_t {
+    uint64_t inserted, 
+             collisions,
+             max_inserts,
+             num_rows;
+    bool in_refresh;
+} bgh_stats_t;
 
 typedef struct _bgh_tbl_t {
     // The callback to clean up user data
@@ -110,6 +118,9 @@ bgh_stat_t bgh_insert(bgh_t *tracker, bgh_key_t *key, void *data);
 
 // Delete entry 
 void bgh_clear(bgh_t *tracker, bgh_key_t *key);
+
+// Populate given stats structure
+void bgh_get_stats(bgh_t *tracker, bgh_stats_t *stats);
 
 #ifdef __cplusplus
 }
