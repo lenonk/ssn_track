@@ -8,6 +8,7 @@
 #include <map>
 #include <list>
 #include <vector>
+#include <sys/time.h>
 #include "../bgh/bgh.h"
 
 extern "C" {
@@ -59,6 +60,7 @@ void assert_refresh_within(bgh_t *b, int seconds) {
 void primes_test() {
     printf("%s\n", __func__);
 
+    // Limit
     assert(prime_nearest_idx(0) == 0);
     assert(prime_nearest_idx(50046) == 0);
     assert(prime_nearest_idx(50047) == 0);
@@ -66,14 +68,16 @@ void primes_test() {
     assert(prime_nearest_idx(50048) == 1);
     assert(prime_nearest_idx(100002) == 1);
     assert(prime_nearest_idx(100004) == 2);
-    assert(prime_nearest_idx(15485783) == 26);
-    assert(prime_nearest_idx(16000000) == 26);
 
     assert(prime_smaller_idx(0) == 50047);
     assert(prime_smaller_idx(1) == 50047);
     assert(prime_larger_idx(1) == 200003);
 
-    assert(prime_larger_idx(26) == 15485783);
+    assert(prime_nearest_idx(16000000) == 26);
+    assert(prime_larger_idx(26) == 17000023);
+    assert(prime_larger_idx(31) == 20000003);
+    // Limit
+    assert(prime_larger_idx(32) == 20000003);
 }
 
 void basic() {
@@ -257,11 +261,14 @@ void linear_probing() {
 
     assert(idx1 == idx2-1);
 
+    // Removed. No longer doing "hash healing" due to edge case and low value
+    #if 0
     // Clear the first one. When we do the next lookup on the collided row, it
     // will adjust back by one
     bgh_clear(tracker, &key1);
     idx2 = _lookup_idx(tracker->active, &key2);
     assert(idx1 == idx2);
+    #endif
 
     bgh_free(tracker);
 }
@@ -459,7 +466,7 @@ void drain() {
     // this moves the entry from the active to the standby table
     assert_eq(
         _draining_lookup_active(tracker->active, tracker->standby, &key), "first");
-    // No longer in active table
+    // Deleted from active table
     assert_lookup_clear(tracker->active, &key);
     // In standby
     assert_lookup_eq(tracker->standby, &key, "first");
@@ -536,12 +543,27 @@ bgh_key_t get_rand_key() {
     return keys[rand() % keys.size()];
 }
 
+static int64_t inline nanos_total(struct timespec *start) {
+    static struct timespec end, ret;
+    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &end);
+
+    if ((end.tv_nsec - start->tv_nsec) < 0) {
+        ret.tv_sec = end.tv_sec - start->tv_sec - 1;
+        ret.tv_nsec = 1000000000 + end.tv_nsec - start->tv_nsec;
+    } else {
+        ret.tv_sec = end.tv_sec - start->tv_sec;
+        ret.tv_nsec = end.tv_nsec - start->tv_nsec;
+    }
+
+    return (uint64_t)ret.tv_sec * 1000000000L + ret.tv_nsec;
+}
+
 void stress() {
     puts("Starting long-running stress test");
 
     bgh_config_t conf;
     bgh_config_init(&conf);
-    conf.starting_rows = 10000141;
+    conf.starting_rows = 5000153;
     conf.timeout = 4;
     conf.refresh_period = 6;
 
@@ -557,7 +579,13 @@ void stress() {
     time_t last_out = 0,
            last_state_change = 5,
            start = time(NULL);
-    uint64_t failed_insert = 0;
+    uint64_t failed_insert = 0,
+             lookup_total_time = 0,
+             lookup_count = 1, // hack to avoid /0 with first stat update
+             insert_total_time = 0,
+             insert_count = 1; // hack for first stat update
+    struct timespec tstart;
+
     while(1) {
         bgh_key_t key;
 
@@ -568,15 +596,20 @@ void stress() {
             bgh_stats_t stats;
             bgh_get_stats(tracker, &stats);
             // print stats
-            printf("\n%lu - Currently using %d keys\n", 
-                time(NULL), sessions_max);
+            printf("\n%lus - Currently using %d keys\n", 
+                time(NULL) - start, sessions_max);
             printf("- inserted:       %llu\n", stats.inserted);
             printf("- collisions:     %llu\n", stats.collisions);
             printf("- table size:     %llu\n", stats.num_rows);
             printf("- in refresh:     %s\n", stats.in_refresh ? "yes" : "no");
             printf("- failed inserts: %llu\n", failed_insert);
+            printf("- %% used:         %f\n", (float)stats.inserted / stats.num_rows);
+            printf("- Lookup time avg: %llu ns\n", lookup_total_time/lookup_count);
+            printf("- Insert time avg: %llu ns\n", insert_total_time/insert_count);
 
             failed_insert = 0;
+            lookup_total_time = lookup_count = 0,
+            insert_total_time = insert_count  = 0;
         }
 
         if(now - last_state_change > 30) {
@@ -586,27 +619,39 @@ void stress() {
             last_state_change = now;
         }
 
+        if(now - start > 60) 
+            break;
+
         // New session
         if(!(rand() % 10)) {
             key = get_rand_key();
             void *d = strdup("data");
+
+            clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &tstart);
             if(bgh_insert(tracker, &key, d) != BGH_OK) {
                 failed_insert++;
                 free(d);
+            } 
+            else {
+                insert_total_time += nanos_total(&tstart);
+                insert_count++;
             }
         }
 
         // Lookup
         if(!(rand() % 2)) {
             key = keys[rand() % keys.size()];
+            clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &tstart);
             bgh_lookup(tracker, &key);
+            lookup_total_time += nanos_total(&tstart);
+            lookup_count++;
             // assert_eq(bgh_lookup(tracker, &key), "data");
         }
 
         // Clear
         if(!(rand() % 20)) {
-            //key = get_rand_key();
-            //bgh_clear(tracker, &key);
+            key = get_rand_key();
+            bgh_clear(tracker, &key);
         }
 
         // Replace a key. The old session will timeout

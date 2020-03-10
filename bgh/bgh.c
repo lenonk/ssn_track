@@ -134,7 +134,7 @@ static void *refresh_thread(void *ctx) {
         if(!ssns->standby) {
             // XXX Need way to handle/report this case gracefully
             // For now, just skip resize + timneout :/
-            abort();
+            // abort();
             continue;
         }
 
@@ -235,22 +235,6 @@ static inline uint64_t hash_func(uint64_t mask, bgh_key_t *key) {
     return h % mask;
 }
 
-bool _try_heal_collision(bgh_tbl_t *table, int64_t idx) {
-    // If previous row has been deleted, move this row's data up one.
-    // This has the effect of gradually resolving collisions as data is
-    // cleared.
-    // The check for !idx just ignores an edge case rather than add
-    // extra logic for it
-    if(!idx || !table->rows[idx-1]->deleted)
-        return false;
-
-    table->rows[idx-1]->data = table->rows[idx]->data;
-    table->rows[idx-1]->deleted = false;
-    table->rows[idx]->deleted = true;
-    table->rows[idx]->data = NULL;
-    return true;
-}
-
 int64_t _lookup_idx(bgh_tbl_t *table, bgh_key_t *key) {
     int64_t idx = hash_func(table->num_rows, key);
     bgh_row_t *row = table->rows[idx];
@@ -284,11 +268,6 @@ int64_t _lookup_idx(bgh_tbl_t *table, bgh_key_t *key) {
         bgh_row_t *row = table->rows[idx];
 
         if(key_eq(key, &row->key)) {
-            if(_try_heal_collision(table, idx)) {
-                table->collisions--;
-                idx--;
-            }
-
             // Intentionally ignoring the collision count here. Otherwise, we 
             // wind up counting extra collisions every time we look up this row
             return idx;
@@ -327,8 +306,6 @@ bgh_row_t *_lookup_row(bgh_tbl_t *table, bgh_key_t *key) {
         bgh_row_t *row = table->rows[idx];
 
         if(key_eq(key, &row->key)) {
-            _try_heal_collision(table, idx);
-
             // Intentionally ignoring the collision count here. Otherwise, we 
             // wind up counting extra collisions every time we look up this row
             return row;
@@ -447,16 +424,12 @@ void *bgh_lookup(bgh_t *ssns, bgh_key_t *key) {
 }
 
 void bgh_delete_from_table(bgh_tbl_t *table, bgh_key_t *key) {
-    int64_t idx = _lookup_idx(table, key);
-    if(idx < 0)
-        return; // Should never happen
-
-    bgh_row_t *row = table->rows[idx];
-
-    if(!row->data) 
+    bgh_row_t *row = _lookup_row(table, key);
+    if(!row || !row->data) 
         return;
 
     table->free_cb(row->data);
+
     table->inserted--;
     row->data = NULL;
     row->deleted = true;

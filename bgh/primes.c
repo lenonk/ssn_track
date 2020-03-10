@@ -1,5 +1,8 @@
 #include "primes.h"
 
+// Handy:
+// http://compoasso.free.fr/primelistweb/page/prime/liste_online_en.php
+
 static uint64_t primes[] = {
 	50047,
 	100003,
@@ -27,7 +30,11 @@ static uint64_t primes[] = {
 	13000133,
 	14000071,
 	15000017,
-	15485783,
+    16000057,
+    17000023,
+    18000041,
+    19000013,
+    20000003
 };
 
 int _prime_nearest_idx(uint64_t val, int idx, int lower, int upper) {
