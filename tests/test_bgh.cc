@@ -545,7 +545,7 @@ bgh_key_t get_rand_key() {
 
 static int64_t inline nanos_total(struct timespec *start) {
     static struct timespec end, ret;
-    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &end);
+    clock_gettime(CLOCK_MONOTONIC, &end);
 
     if ((end.tv_nsec - start->tv_nsec) < 0) {
         ret.tv_sec = end.tv_sec - start->tv_sec - 1;
@@ -563,9 +563,9 @@ void stress() {
 
     bgh_config_t conf;
     bgh_config_init(&conf);
-    conf.starting_rows = 5000153;
+    conf.starting_rows = 3000017;
     conf.timeout = 4;
-    conf.refresh_period = 6;
+    conf.refresh_period = 8;
 
     bgh_t *tracker = bgh_config_new(&conf, free_cb);
 
@@ -583,7 +583,8 @@ void stress() {
              lookup_total_time = 0,
              lookup_count = 1, // hack to avoid /0 with first stat update
              insert_total_time = 0,
-             insert_count = 1; // hack for first stat update
+             insert_count = 1, // hack for first stat update
+             iteration = 0;
     struct timespec tstart;
 
     while(1) {
@@ -596,14 +597,14 @@ void stress() {
             bgh_stats_t stats;
             bgh_get_stats(tracker, &stats);
             // print stats
-            printf("\n%lus - Currently using %d keys\n", 
-                time(NULL) - start, sessions_max);
+            printf("\n%lus, iteration %llu, - Simulating %d sessions\n",
+                    time(NULL) - start, iteration, sessions_max);
             printf("- inserted:       %llu\n", stats.inserted);
             printf("- collisions:     %llu\n", stats.collisions);
             printf("- table size:     %llu\n", stats.num_rows);
             printf("- in refresh:     %s\n", stats.in_refresh ? "yes" : "no");
             printf("- failed inserts: %llu\n", failed_insert);
-            printf("- %% used:         %f\n", (float)stats.inserted / stats.num_rows);
+            printf("- %% used:         %.1f\n", (float)stats.inserted / stats.num_rows * 100);
             printf("- Lookup time avg: %llu ns\n", lookup_total_time/lookup_count);
             printf("- Insert time avg: %llu ns\n", insert_total_time/insert_count);
 
@@ -619,7 +620,7 @@ void stress() {
             last_state_change = now;
         }
 
-        if(now - start > 60) 
+        if(now - start > 60*5)
             break;
 
         // New session
@@ -627,7 +628,7 @@ void stress() {
             key = get_rand_key();
             void *d = strdup("data");
 
-            clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &tstart);
+            clock_gettime(CLOCK_MONOTONIC, &tstart);
             if(bgh_insert(tracker, &key, d) != BGH_OK) {
                 failed_insert++;
                 free(d);
@@ -641,7 +642,7 @@ void stress() {
         // Lookup
         if(!(rand() % 2)) {
             key = keys[rand() % keys.size()];
-            clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &tstart);
+            clock_gettime(CLOCK_MONOTONIC, &tstart);
             bgh_lookup(tracker, &key);
             lookup_total_time += nanos_total(&tstart);
             lookup_count++;
@@ -658,6 +659,8 @@ void stress() {
         if(!(rand() % 20)) {
             keys[rand() % sessions_max] = gen_rand_key();
         }
+
+        iteration++;
     }
 
     bgh_free(tracker);
